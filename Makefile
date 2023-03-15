@@ -5,7 +5,7 @@ CFLAGS = -Wall
 LDFLAGS = -lEGL -lGLESv2 -lmmngr -lmmngrbuf -l omxr_core -lpthread -lm
 
 # Define a list of source files
-SOURCE_FILES = main.c
+SOURCE_FILES = egl.c gl.c omx.c main.c mmngr.c util.c v4l2.c queue.c
 
 # Define a list of object files
 OBJECT_FILES = $(SOURCE_FILES:.c=.o)
