@@ -1,5 +1,5 @@
 # Add compile flags
-CFLAGS = -Wall
+CFLAGS = -Wall -Wextra -Werror
 
 # Add linking flags
 LDFLAGS = -lEGL -lGLESv2 -lmmngr -lmmngrbuf -l omxr_core -lpthread -lm

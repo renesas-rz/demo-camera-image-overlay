@@ -32,6 +32,9 @@
  *                              FUNCTION MACROS                               *
  ******************************************************************************/
 
+/* Mark variable 'VAR' as unused */
+#define UNUSED(VAR) ((void)(VAR))
+
 /* Return smallest integral value not less than 'VAL' and divisible by 'RND'
  * (based on: https://github.com/Xilinx/vcu-omx-il/blob/master/exe_omx/encoder).
  *

@@ -39,13 +39,13 @@ queue_t queue_create_empty(uint32_t elm_cnt, uint32_t elm_size)
     /* Check parameters */
     assert((elm_cnt > 0) && (elm_size > 0));
 
-    queue.elm_cnt  = elm_cnt;
-    queue.elm_size = elm_size;
+    queue.elm_cnt  = (int)elm_cnt;
+    queue.elm_size = (int)elm_size;
     queue.p_array  = calloc(elm_cnt, elm_size);
 
     /* Mark the queue as empty */
-    queue.front_idx = -1 * elm_size;
-    queue.rear_idx  = -1 * elm_size;
+    queue.front_idx = -1 * (int)elm_size;
+    queue.rear_idx  = -1 * (int)elm_size;
 
     return queue;
 }
@@ -74,7 +74,7 @@ queue_t queue_create_full(const void * p_array,
 
     /* Mark the queue as full */
     queue.front_idx = 0;
-    queue.rear_idx  = (elm_cnt - 1) * elm_size;
+    queue.rear_idx  = (queue.elm_cnt - 1) * queue.elm_size;
 
     return queue;
 }
@@ -162,7 +162,7 @@ bool queue_is_full(const queue_t * p_queue)
      *     ├───────────┼───────────┼───────────┼───────────┤
      *       Element 1   Element 2   Element 3   Element 4 */
 
-    const uint32_t last_idx = (p_queue->elm_cnt - 1) * p_queue->elm_size;
+    const int last_idx = (p_queue->elm_cnt - 1) * p_queue->elm_size;
 
     return ((p_queue->front_idx == 0) && (p_queue->rear_idx == last_idx)) ||
            (p_queue->front_idx == (p_queue->rear_idx + p_queue->elm_size));

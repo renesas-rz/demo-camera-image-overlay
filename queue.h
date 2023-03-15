@@ -40,8 +40,8 @@ typedef struct
     /* An array which contains 'elm_cnt' elements of 'elm_size' bytes each */
     void * p_array;
 
-    uint32_t elm_cnt;
-    uint32_t elm_size;
+    int elm_cnt;
+    int elm_size;
 
     /* An index which tracks the first element in queue */
     int front_idx;

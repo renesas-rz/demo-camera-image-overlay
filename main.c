@@ -148,7 +148,7 @@ typedef struct
 
 /**************************** FOR SIGNAL HANDLING *****************************/
 
-void sigint_handler(int signum, siginfo_t * p_info, void * ptr);
+void sigint_handler(int signum, siginfo_t * p_info, void * p_ptr);
 
 /********************************** FOR OMX ***********************************/
 
@@ -211,7 +211,7 @@ void * thread_output(void * p_param);
  *                               MAIN FUNCTION                                *
  ******************************************************************************/
 
-int main(int argc, char ** pp_argv)
+int main()
 {
     /* Interrupt signal */
     struct sigaction sig_act;
@@ -546,8 +546,13 @@ int main(int argc, char ** pp_argv)
 
 /**************************** FOR SIGNAL HANDLING *****************************/
 
-void sigint_handler(int signum, siginfo_t * p_info, void * ptr)
+void sigint_handler(int signum, siginfo_t * p_info, void * p_ptr)
 {
+    /* Mark parameters as unused */
+    UNUSED(p_ptr);
+    UNUSED(p_info);
+    UNUSED(signum);
+
     g_int_signal = 1;
 }
 
@@ -557,6 +562,11 @@ OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
                                 OMX_EVENTTYPE eEvent, OMX_U32 nData1,
                                 OMX_U32 nData2, OMX_PTR pEventData)
 {
+    /* Mark parameters as unused */
+    UNUSED(pAppData);
+    UNUSED(hComponent);
+    UNUSED(pEventData);
+
     char * p_state_str = NULL;
 
     switch (eEvent)
@@ -604,6 +614,9 @@ OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
                                     OMX_PTR pAppData,
                                     OMX_BUFFERHEADERTYPE * pBuffer)
 {
+    /* Mark parameter as unused */
+    UNUSED(hComponent);
+
     omx_data_t * p_data = (omx_data_t *)pAppData;
 
     /* Check parameter */
@@ -634,6 +647,9 @@ OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent,
                                    OMX_PTR pAppData,
                                    OMX_BUFFERHEADERTYPE * pBuffer)
 {
+    /* Mark parameter as unused */
+    UNUSED(hComponent);
+
     omx_data_t * p_data = (omx_data_t *)pAppData;
 
     /* Check parameter */
