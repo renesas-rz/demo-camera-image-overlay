@@ -53,7 +53,7 @@ modprobe $UVC_DRIVER allocators=1
 if [ $? -eq 0 ]
 then
     echo "Running sample application"
-    ./simple_overlay
+    ./main
 fi
 
 # Restore current log level
