@@ -197,6 +197,7 @@ bool gl_init_ext_funcs()
                             eglGetProcAddress("glEGLImageTargetTexture2DOES");
 
     if ((glEGLImageTargetTexture2DOES == NULL) ||
+        !gl_is_ext_supported("GL_OES_surfaceless_context") ||
         !gl_is_ext_supported("GL_OES_EGL_image_external") ||
         !gl_is_ext_supported("GL_OES_EGL_image_external_essl3") ||
         !gl_is_ext_supported("GL_EXT_YUV_target"))
