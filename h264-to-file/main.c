@@ -430,7 +430,7 @@ int main()
     assert(omx_fill_buffers(handle, pp_out_bufs, H264_BUFFER_COUNT));
 
     /**************************************************************************
-     *                STEP 11: MAKE V4L2 READY TO CAPTURE DATA                *
+     *                    STEP 11: PREPARE CAPTURING DATA                     *
      **************************************************************************/
 
     /* For capturing applications, it is customary to first enqueue all
@@ -482,7 +482,7 @@ int main()
     assert(v4l2_disable_capturing(cam_fd));
 
     /**************************************************************************
-     *                    STEP 16: CLEAN UP OMX' RESOURCES                    *
+     *                          STEP 16: CLEAN UP OMX                         *
      **************************************************************************/
 
     pthread_mutex_destroy(&mut_in);
@@ -528,7 +528,7 @@ int main()
     mmngr_dealloc_nv12_dmabufs(p_nv12_bufs, NV12_BUFFER_COUNT);
 
     /**************************************************************************
-     *                   STEP 17: CLEAN UP V4L2'S RESOURCES                   *
+     *                     STEP 17: CLEAN UP V4L2 DEVICE                      *
      **************************************************************************/
 
     /* Clean up YUYV buffers */
@@ -693,10 +693,16 @@ void * thread_input(void * p_param)
     int index = -1;
     OMX_BUFFERHEADERTYPE * p_buf = NULL;
 
-    /* EGL display connection */
+    /* EGL display, config, and context */
     EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT;
 
-    /* Resources for OpenGL ES */
+    EGLConfig config;
+
+    /* OpenGL ES */
+    GLuint rec_prog  = 0;
+    GLuint conv_prog = 0;
+
     gl_resources_t gl_resources;
 
     /* YUYV images and textures */
@@ -712,25 +718,43 @@ void * thread_input(void * p_param)
     assert(p_data != NULL);
 
     /**************************************************************************
-     *                    STEP 1: SET UP EGL AND OPENGL ES                    *
+     *                           STEP 1: SET UP EGL                           *
      **************************************************************************/
 
-    /* Create EGL display */
-    display = egl_create_display();
+    /* Connect to EGL display */
+    display = egl_connect_display(EGL_DEFAULT_DISPLAY, &config);
     assert(display != EGL_NO_DISPLAY);
 
-    /* Initialize OpenGL ES and EGL extension functions */
-    assert(gl_init_ext_funcs());
+    /* Create and bind EGL context */
+    context = egl_create_context(display, config, EGL_NO_SURFACE);
+    assert(context != EGL_NO_CONTEXT);
+
+    /* Initialize EGL extension functions */
     assert(egl_init_ext_funcs(display));
+
+    /**************************************************************************
+     *                        STEP 2: SET UP OPENGL ES                        *
+     **************************************************************************/
+
+    /* Create program object for drawing rectangle */
+    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
+                                       "rectangle.fs.glsl");
+
+    /* Create program object for converting YUYV to NV12 */
+    conv_prog = gl_create_prog_from_src("yuyv-to-nv12.vs.glsl",
+                                        "yuyv-to-nv12.fs.glsl");
 
     /* Create resources needed for rendering */
     gl_resources = gl_create_resources();
+
+    /* Initialize OpenGL ES extension functions */
+    assert(gl_init_ext_funcs());
 
     /* Make sure Viewport matches the width and height of YUYV buffer */
     glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /**************************************************************************
-     *               STEP 2: CREATE TEXTURES FROM YUYV BUFFERS                *
+     *               STEP 3: CREATE TEXTURES FROM YUYV BUFFERS                *
      **************************************************************************/
 
     /* Exit program if size of YUYV buffer is not aligned to page size.
@@ -762,7 +786,7 @@ void * thread_input(void * p_param)
     assert(p_yuyv_texs != NULL);
 
     /**************************************************************************
-     *               STEP 3: CREATE TEXTURES FROM NV12 BUFFERS                *
+     *               STEP 4: CREATE TEXTURES FROM NV12 BUFFERS                *
      **************************************************************************/
 
     /* Create NV12 EGLImage objects */
@@ -778,7 +802,7 @@ void * thread_input(void * p_param)
     assert(p_nv12_texs != NULL);
 
     /**************************************************************************
-     *             STEP 4: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
+     *             STEP 5: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
      **************************************************************************/
 
     /* Create framebuffers */
@@ -786,7 +810,7 @@ void * thread_input(void * p_param)
     assert(p_nv12_fbs != NULL);
 
     /**************************************************************************
-     *                       STEP 5: THREAD'S MAIN LOOP                       *
+     *                       STEP 6: THREAD'S MAIN LOOP                       *
      **************************************************************************/
 
     while (is_running)
@@ -823,10 +847,10 @@ void * thread_input(void * p_param)
         glBindFramebuffer(GL_FRAMEBUFFER, p_nv12_fbs[index]);
 
         /* Convert YUYV texture to NV12 texture */
-        gl_conv_yuyv_to_nv12(p_yuyv_texs[cam_buf.index], gl_resources);
+        gl_convert_yuyv(conv_prog, p_yuyv_texs[cam_buf.index], gl_resources);
 
         /* Draw rectangle on NV12 texture */
-        gl_draw_rectangle(gl_resources);
+        gl_draw_rectangle(rec_prog, gl_resources);
 
         /* Reuse camera's buffer */
         assert(v4l2_enqueue_buf(p_data->cam_fd, cam_buf.index));
@@ -850,7 +874,7 @@ void * thread_input(void * p_param)
     }
 
     /**************************************************************************
-     *                 STEP 6: CLEAN UP OPENGL ES'S RESOURCES                 *
+     *                       STEP 7: CLEAN UP OPENGL ES                       *
      **************************************************************************/
 
     /* Delete framebuffers and NV12 textures */
@@ -864,10 +888,20 @@ void * thread_input(void * p_param)
     egl_delete_images(display, p_yuyv_imgs, YUYV_BUFFER_COUNT);
 
     /* Delete resources for OpenGL ES */
+    glDeleteProgram(rec_prog);
+    glDeleteProgram(conv_prog);
+
     gl_delete_resources(gl_resources);
 
-    /* Delete EGL display */
-    egl_delete_display(display);
+    /**************************************************************************
+     *                          STEP 8: CLEAN UP EGL                          *
+     **************************************************************************/
+
+    /* Delete EGL context */
+    eglDestroyContext(display, context);
+
+    /* Close connection to EGL display */
+    egl_disconnect_display(display);
 
     printf("Thread '%s' exited\n", __FUNCTION__);
     return NULL;

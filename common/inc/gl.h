@@ -24,12 +24,10 @@
  *    gl_delete_resources
  *    
  *    gl_draw_rectangle
- *    gl_conv_yuyv_to_nv12
+ *    gl_convert_yuyv
  *
  * AUTHOR: RVC       START DATE: 15/03/2023
  *
- * CHANGES:
- * 
  ******************************************************************************/
 
 #ifndef _GL_H_
@@ -53,15 +51,12 @@
 typedef struct
 {
     /* For drawing rectangle */
-    GLuint shape_prog;
     GLuint vbo_rec_vertices;
     GLuint ibo_rec_indices;
 
-    /* For YUYV-to-NV12 conversion */
-    GLuint conv_prog;
+    /* For converting YUYV */
     GLuint vbo_canvas_vertices;
     GLuint ibo_canvas_indices;
-    GLint uniform_yuyv_texture;
 
 } gl_resources_t;
 
@@ -122,10 +117,14 @@ gl_resources_t gl_create_resources();
 /* Delete resources for OpenGL ES */
 void gl_delete_resources(gl_resources_t res);
 
-/* Draw rectangle */
-void gl_draw_rectangle(gl_resources_t res);
+/* Draw rectangle.
+ *
+ * https://learnopengl.com
+ * https://en.wikibooks.org/wiki/OpenGL_Programming */
+void gl_draw_rectangle(GLuint prog, gl_resources_t res);
 
-/* Convert YUYV texture to NV12 texture */
-void gl_conv_yuyv_to_nv12(GLuint yuyv_texture, gl_resources_t res);
+/* Convert YUYV texture.
+ * The destination format is determined by 'prog' and framebuffer's layout */
+void gl_convert_yuyv(GLuint prog, GLuint yuyv_tex, gl_resources_t res);
 
 #endif /* _GL_H_ */

@@ -5,8 +5,10 @@
  *   EGL functions.
  *
  * PUBLIC FUNCTIONS:
- *   egl_create_display
- *   egl_delete_display
+ *   egl_connect_display
+ *   egl_disconnect_display
+ *
+ *   egl_create_context
  *
  *   egl_is_ext_supported
  *   egl_init_ext_funcs
@@ -19,8 +21,6 @@
  *
  * AUTHOR: RVC       START DATE: 15/03/2023
  *
- * CHANGES:
- * 
  ******************************************************************************/
 
 #ifndef _EGL_H_
@@ -40,12 +40,18 @@
  *                            FUNCTION DECLARATION                            *
  ******************************************************************************/
 
-/* Obtain EGL display connection.
- * Return a value other than 'EGL_NO_DISPLAY' if successful */
-EGLDisplay egl_create_display();
+/* Obtain EGL display connection for the native display 'native'.
+ * Return a value other than 'EGL_NO_DISPLAY and update 'p_config' if
+ * successful */
+EGLDisplay egl_connect_display(NativeDisplayType native, EGLConfig * p_config);
 
-/* Release current context and terminate EGL display connection */
-void egl_delete_display(EGLDisplay display);
+/* Release current context (if any) and close connection to EGL display */
+void egl_disconnect_display(EGLDisplay display);
+
+/* Create a new EGL rendering context and then attach it to EGL surfaces.
+ * Return a value other than 'EGL_NO_CONTEXT' if successful */
+EGLContext egl_create_context(EGLDisplay display,
+                              EGLConfig config, EGLSurface surface);
 
 /* Return true if 'p_name' is a supported extension to EGL */
 bool egl_is_ext_supported(EGLDisplay display, const char * p_name);

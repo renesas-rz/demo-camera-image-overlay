@@ -9,8 +9,6 @@
  * 
  * AUTHOR: RVC       START DATE: 15/03/2023
  *
- * CHANGES:
- * 
  ******************************************************************************/
 
 #include <stdio.h>
@@ -378,7 +376,7 @@ gl_resources_t gl_create_resources()
         2, 3, 0,
     };
 
-    /* For YUYV-to-NV12 conversion */
+    /* For converting YUYV */
 
     /* No zooming in/out and convert entire YUYV texture */
     GLfloat canvas_vertices[] =
@@ -396,18 +394,6 @@ gl_resources_t gl_create_resources()
         0, 1, 2,
         2, 3, 0,
     };
-
-    /* Create program object for rendering rectangle */
-    res.shape_prog = gl_create_prog_from_src("shape-rendering.vs.glsl",
-                                             "shape-rendering.fs.glsl");
-
-    /* Create program object for converting YUYV to NV12 */
-    res.conv_prog = gl_create_prog_from_src("yuyv-to-nv12-conv.vs.glsl",
-                                            "yuyv-to-nv12-conv.fs.glsl");
-
-    /* Get variable 'yuyvTexture' from fragment shader */
-    res.uniform_yuyv_texture = glGetUniformLocation(res.conv_prog,
-                                                    "yuyvTexture");
 
     /* Create vertex/index buffer objects and add data to it */
     glGenBuffers(1, &(res.vbo_rec_vertices));
@@ -446,18 +432,17 @@ void gl_delete_resources(gl_resources_t res)
     /* Delete index buffer objects */
     glDeleteBuffers(1, &(res.ibo_rec_indices));
     glDeleteBuffers(1, &(res.ibo_canvas_indices));
-
-    /* Delete program objects */
-    glDeleteProgram(res.shape_prog);
-    glDeleteProgram(res.conv_prog);
 }
 
-void gl_draw_rectangle(gl_resources_t res)
+void gl_draw_rectangle(GLuint prog, gl_resources_t res)
 {
     GLint tmp_size = 0;
 
+    /* Check parameter */
+    assert(prog != 0);
+
     /* Use program object for drawing rectangle */
-    glUseProgram(res.shape_prog);
+    glUseProgram(prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -492,15 +477,15 @@ void gl_draw_rectangle(gl_resources_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_conv_yuyv_to_nv12(GLuint yuyv_texture, gl_resources_t res)
+void gl_convert_yuyv(GLuint prog, GLuint yuyv_tex, gl_resources_t res)
 {
     GLint tmp_size = 0;
 
-    /* Check parameter */
-    assert(yuyv_texture != 0);
+    /* Check parameters */
+    assert((prog != 0) && (yuyv_tex != 0));
 
-    /* Use program object for YUYV-to-NV12 conversion */
-    glUseProgram(res.conv_prog);
+    /* Use program object for converting YUYV */
+    glUseProgram(prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -516,14 +501,10 @@ void gl_conv_yuyv_to_nv12(GLuint yuyv_texture, gl_resources_t res)
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
                           4 * sizeof(GLfloat), (void*)(2 * sizeof(GLfloat)));
 
-    /* Bind the YUYV texture to texture unit 0 */
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_texture);
+    /* Bind the YUYV texture */
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_tex);
 
-    /* Tell OpenGL sampler 'yuyvTexture' belongs to texture unit 0 */
-    glUniform1i(res.uniform_yuyv_texture, /*GL_TEXTURE*/0);
-
-    /* Convert YUYV texture to NV12 texture */
+    /* Convert YUYV texture */
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
     glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_size);
 

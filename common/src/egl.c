@@ -9,8 +9,6 @@
  * 
  * AUTHOR: RVC       START DATE: 15/03/2023
  *
- * CHANGES:
- * 
  ******************************************************************************/
 
 #include <assert.h>
@@ -39,10 +37,13 @@ EGLDESTROYIMAGEKHR eglDestroyImageKHR;
  *                            FUNCTION DEFINITION                             *
  ******************************************************************************/
 
-EGLDisplay egl_create_display()
+EGLDisplay egl_connect_display(NativeDisplayType native, EGLConfig * p_config)
 {
     EGLDisplay display = EGL_NO_DISPLAY;
-    EGLContext context = EGL_NO_CONTEXT;
+    EGLint count = 0;
+
+    /* Check parameter */
+    assert(p_config != NULL);
 
     EGLint config_attribs[] =
     {
@@ -76,18 +77,8 @@ EGLDisplay egl_create_display()
         EGL_NONE,
     };
 
-    const EGLint context_attribs[] =
-    {
-        /* The requested major version of an OpenGL ES context */
-        EGL_CONTEXT_CLIENT_VERSION, 2,
-        EGL_NONE,
-    };
-
-    EGLConfig fb_config;
-    EGLint config_cnt = 0;
-
     /* Get default EGL display connection */
-    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    display = eglGetDisplay(native);
     if (display == EGL_NO_DISPLAY)
     {
         printf("Error: Failed to get EGL display\n");
@@ -98,42 +89,69 @@ EGLDisplay egl_create_display()
     if (eglInitialize(display, NULL, NULL) == EGL_FALSE)
     {
         printf("Error: Failed to initialize EGL display\n");
+        egl_disconnect_display(display);
+
         return EGL_NO_DISPLAY;
     }
 
     /* Get a list of EGL frame buffer configurations */
-    eglChooseConfig(display, config_attribs, &fb_config, 1, &config_cnt);
-    if (config_cnt == 0)
+    eglChooseConfig(display, config_attribs, p_config, 1, &count);
+    if (count == 0)
     {
-        printf("Error: Failed to get EGL frame buffer configs\n");
-        return EGL_NO_DISPLAY;
-    }
+        printf("Error: Failed to get EGL frame buffer configurations\n");
+        egl_disconnect_display(display);
 
-    /* Create an EGL rendering context for the current rendering API.
-     * The context can then be used to render into an EGL drawing surface */
-    context = eglCreateContext(display, fb_config,
-                               EGL_NO_CONTEXT, context_attribs);
-    if (context == EGL_NO_CONTEXT)
-    {
-        printf("Error: Failed to create EGL context\n");
-        return EGL_NO_DISPLAY;
-    }
-
-    /* Bind context without read and draw surfaces */
-    if (EGL_FALSE ==
-        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context))
-    {
-        printf("Error: Failed to bind context without surfaces\n");
         return EGL_NO_DISPLAY;
     }
 
     return display;
 }
 
-void egl_delete_display(EGLDisplay display)
+void egl_disconnect_display(EGLDisplay display)
 {
+    /* Check parameter */
+    assert(display != EGL_NO_DISPLAY);
+
+    /* The currently bound context is marked as no longer current */
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+
+    /* Release resources associated with the EGL display connection */
     eglTerminate(display);
+}
+
+EGLContext egl_create_context(EGLDisplay display,
+                              EGLConfig config, EGLSurface surface)
+{
+    EGLContext context = EGL_NO_CONTEXT;
+
+    const EGLint ctx_attribs[] =
+    {
+        /* The requested major version of an OpenGL ES context */
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE,
+    };
+
+    /* Check parameter */
+    assert(display != EGL_NO_DISPLAY);
+
+    /* Create an EGL rendering context */
+    context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs);
+    if (context == EGL_NO_CONTEXT)
+    {
+        printf("Error: Failed to create EGL context\n");
+        return EGL_NO_CONTEXT;
+    }
+
+    /* Attach the context to EGL surfaces */
+    if (eglMakeCurrent(display, surface, surface, context) == EGL_FALSE)
+    {
+        printf("Error: Failed to bind context\n");
+        eglDestroyContext(display, context);
+
+        return EGL_NO_CONTEXT;
+    }
+
+    return context;
 }
 
 bool egl_is_ext_supported(EGLDisplay display, const char * p_name)

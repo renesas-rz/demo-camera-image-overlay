@@ -2,7 +2,15 @@
 CFLAGS = -Wall -Wextra -Werror
 
 # Add linking flags
-LDFLAGS = -lEGL -lGLESv2 -lmmngr -lmmngrbuf -l omxr_core -lpthread -lm
+LDFLAGS = -lEGL            \
+          -lGLESv2         \
+          -lmmngr          \
+          -lmmngrbuf       \
+          -lomxr_core      \
+          -lpthread        \
+          -lm              \
+          -lwayland-client \
+          -lwayland-egl
 
 # Define directories
 OBJ_DIR = ./objs
