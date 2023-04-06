@@ -156,7 +156,64 @@ int main()
     }
 
     /**************************************************************************
-     *               STEP 4: CREATE TEXTURES FROM YUYV BUFFERS                *
+     *                         STEP 4: SET UP WAYLAND                         *
+     **************************************************************************/
+
+    /* Connect to Wayland display */
+    p_wl_display = wl_connect_display();
+    assert(p_wl_display != NULL);
+
+    /* Create Wayland window */
+    p_wl_window = wl_create_window(p_wl_display, WINDOW_TITLE,
+                                   FRAME_WIDTH_IN_PIXELS,
+                                   FRAME_HEIGHT_IN_PIXELS);
+    assert(p_wl_window != NULL);
+
+    /**************************************************************************
+     *                           STEP 5: SET UP EGL                           *
+     **************************************************************************/
+
+    /* Connect to EGL display */
+    egl_display = egl_connect_display((EGLNativeDisplayType)
+                                      p_wl_display->p_display, &egl_config);
+    assert(egl_display != EGL_NO_DISPLAY);
+
+    /* Create EGL window surface */
+    egl_surface = eglCreateWindowSurface(egl_display, egl_config,
+                                         (EGLNativeWindowType)
+                                         p_wl_window->p_egl_window, NULL);
+    assert(egl_surface != EGL_NO_SURFACE);
+
+    /* Create and bind EGL context */
+    egl_context = egl_create_context(egl_display, egl_config, egl_surface);
+    assert(egl_context != EGL_NO_CONTEXT);
+
+    /* Initialize EGL extension functions */
+    assert(egl_init_ext_funcs(egl_display));
+
+    /**************************************************************************
+     *                        STEP 6: SET UP OPENGL ES                        *
+     **************************************************************************/
+
+    /* Create program object for drawing rectangle */
+    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
+                                       "rectangle.fs.glsl");
+
+    /* Create program object for converting YUYV to RGB */
+    conv_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
+                                        "yuyv-to-rgb.fs.glsl");
+
+    /* Create resources needed for rendering */
+    gl_resources = gl_create_resources();
+
+    /* Initialize OpenGL ES extension functions */
+    assert(gl_init_ext_funcs());
+
+    /* Make sure Viewport matches the width and height of YUYV buffer */
+    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+
+    /**************************************************************************
+     *               STEP 7: CREATE TEXTURES FROM YUYV BUFFERS                *
      **************************************************************************/
 
     /* Exit program if size of YUYV buffer is not aligned to page size.
@@ -186,63 +243,6 @@ int main()
     /* Create YUYV textures */
     p_yuyv_texs = gl_create_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
     assert(p_yuyv_texs != NULL);
-
-    /**************************************************************************
-     *                         STEP 5: SET UP WAYLAND                         *
-     **************************************************************************/
-
-    /* Connect to Wayland display */
-    p_wl_display = wl_connect_display();
-    assert(p_wl_display != NULL);
-
-    /* Create Wayland window */
-    p_wl_window = wl_create_window(p_wl_display, WINDOW_TITLE,
-                                   FRAME_WIDTH_IN_PIXELS,
-                                   FRAME_HEIGHT_IN_PIXELS);
-    assert(p_wl_window != NULL);
-
-    /**************************************************************************
-     *                           STEP 6: SET UP EGL                           *
-     **************************************************************************/
-
-    /* Connect to EGL display */
-    egl_display = egl_connect_display((EGLNativeDisplayType)
-                                      p_wl_display->p_display, &egl_config);
-    assert(egl_display != EGL_NO_DISPLAY);
-
-    /* Create EGL window surface */
-    egl_surface = eglCreateWindowSurface(egl_display, egl_config,
-                                         (EGLNativeWindowType)
-                                         p_wl_window->p_egl_window, NULL);
-    assert(egl_surface != EGL_NO_SURFACE);
-
-    /* Create and bind EGL context */
-    egl_context = egl_create_context(egl_display, egl_config, egl_surface);
-    assert(egl_context != EGL_NO_CONTEXT);
-
-    /* Initialize EGL extension functions */
-    assert(egl_init_ext_funcs(egl_display));
-
-    /**************************************************************************
-     *                        STEP 7: SET UP OPENGL ES                        *
-     **************************************************************************/
-
-    /* Create program object for drawing rectangle */
-    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
-                                       "rectangle.fs.glsl");
-
-    /* Create program object for converting YUYV to RGB */
-    conv_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
-                                        "yuyv-to-rgb.fs.glsl");
-
-    /* Create resources needed for rendering */
-    gl_resources = gl_create_resources();
-
-    /* Initialize OpenGL ES extension functions */
-    assert(gl_init_ext_funcs());
-
-    /* Make sure Viewport matches the width and height of YUYV buffer */
-    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /**************************************************************************
      *                     STEP 8: PREPARE CAPTURING DATA                     *
