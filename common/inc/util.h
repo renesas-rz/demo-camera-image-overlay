@@ -24,6 +24,7 @@
 #define _UTIL_H_
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdbool.h>
 
 /******************************************************************************
@@ -46,6 +47,12 @@
  *   - ROUND_UP(1280, 32) -> 1280.
  *   - ROUND_UP(1920, 32) -> 1920 */
 #define ROUND_UP(VAL, RND) (((VAL) + (RND) - 1) & (~((RND) - 1)))
+
+/* The number of microseconds per second */
+#define USECS_PER_SEC 1000000
+
+/* Convert struct 'timeval' to microseconds */
+#define TIMEVAL_TO_USECS(T) ((int64_t)((T.tv_sec * USECS_PER_SEC) + T.tv_usec))
 
 /******************************************************************************
  *                            FUNCTION DECLARATION                            *

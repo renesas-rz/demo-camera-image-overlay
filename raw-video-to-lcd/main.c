@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <stdbool.h>
 
+#include <sys/time.h>
+
 #include "gl.h"
 #include "wl.h"
 #include "egl.h"
@@ -93,6 +95,12 @@ int main()
     GLuint conv_prog = 0;
 
     gl_resources_t gl_resources;
+
+    /* For calculating FPS */
+    struct timeval temp_tv;
+
+    int frames = 0;
+    int64_t start_us = 0;
 
     /**************************************************************************
      *                STEP 1: SET UP INTERRUPT SIGNAL HANDLER                 *
@@ -267,6 +275,24 @@ int main()
         /* Receive camera's buffer */
         assert(v4l2_dequeue_buf(cam_fd, &cam_buf));
 
+        /* Get current time */
+        gettimeofday(&temp_tv, NULL);
+
+        /* Set start time if the app just started running */
+        if (frames == 0)
+        {
+            start_us = TIMEVAL_TO_USECS(temp_tv);
+        }
+
+        /* Show FPS if the time used to collect frames is more than 5 seconds */
+        if ((TIMEVAL_TO_USECS(temp_tv) - start_us) > (5 * USECS_PER_SEC))
+        {
+            printf("%d frames in 5 seconds: %.1f fps\n", frames, frames / 5.0f);
+
+            frames = 0;
+            start_us = TIMEVAL_TO_USECS(temp_tv);
+        }
+
         /* Convert YUYV texture to RGB texture */
         gl_convert_yuyv(conv_prog, p_yuyv_texs[cam_buf.index], gl_resources);
 
@@ -275,6 +301,9 @@ int main()
 
         /* Display to monitor */
         eglSwapBuffers(egl_display, egl_surface);
+
+        /* Collect frame */
+        frames++;
 
         /* Reuse camera's buffer */
         assert(v4l2_enqueue_buf(cam_fd, cam_buf.index));
