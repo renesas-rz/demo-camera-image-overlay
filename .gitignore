@@ -1,2 +1,5 @@
 *.o
 main
+
+xdg-shell-protocol.c
+xdg-shell-client-protocol.h

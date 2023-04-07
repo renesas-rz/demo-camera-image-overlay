@@ -22,6 +22,15 @@
 #include <wayland-egl.h>
 #include <wayland-client.h>
 
+#include "xdg-shell-client-protocol.h"
+
+/******************************************************************************
+ *                              GLOBAL VARIABLES                              *
+ ******************************************************************************/
+
+/* 1: Window closed */
+extern volatile sig_atomic_t g_window_closed;
+
 /******************************************************************************
  *                           STRUCTURE DEFINITIONS                            *
  ******************************************************************************/
@@ -53,14 +62,13 @@ typedef struct
      * one displayable output */
     struct wl_compositor * p_compositor;
 
-    /* The interface is implemented by servers that provide desktop-style
-     * user interfaces.
-     * It allows clients to associate a 'wl_shell_surface' with a basic surface.
+    /* The interface is exposed as a global object enabling clients to turn
+     * their wl_surfaces into windows in a desktop environment.
      *
-     * Warning: This protocol is deprecated and not intended for production use.
-     * For desktop-style user interfaces, use 'xdg_shell'. Compositors and
-     * clients should not implement this interface */
-    struct wl_shell * p_shell;
+     * It defines the basic functionality needed for clients and the compositor
+     * to create windows that can be dragged, resized, maximized, etc, as well
+     * as creating transient windows such as popup menus */
+    struct xdg_wm_base * p_wm_base;
 
 } wl_display_t;
 
@@ -78,13 +86,18 @@ typedef struct
     /* An interface that may be implemented by a 'wl_surface', for
      * implementations that provide a desktop-style user interface.
      *
-     * It provides requests to treat surfaces like toplevel, fullscreen or
-     * popup windows, move, resize, or maximize them, associate metadata like
-     * title and class, etc.
-     *
-     * On the client side, 'wl_shell_surface_destroy' must be called before
-     * destroying the 'wl_surface' object */
-    struct wl_shell_surface * p_shell_surface;
+     * It provides a base set of functionality required to construct user
+     * interface elements requiring management by the compositor, such as
+     * toplevel windows, menus, etc. The types of functionality are split
+     * into 'xdg_surface' roles */
+    struct xdg_surface * p_xdg_surface;
+
+    /* This interface defines an 'xdg_surface' role which allows a surface to,
+     * among other things, set window-like properties such as maximize,
+     * fullscreen, and minimize, set application-specific metadata like title
+     * and id, and well as trigger user interactive operations such as
+     * interactive resize and move */
+    struct xdg_toplevel * p_xdg_toplevel;
 
     /* An EGL window created from Wayland surface */
     struct wl_egl_window * p_egl_window;

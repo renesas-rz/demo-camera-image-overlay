@@ -41,9 +41,8 @@
  *                              GLOBAL VARIABLES                              *
  ******************************************************************************/
 
-/* 1: The main loop is running.
- * 0: The main loop just stopped */
-volatile sig_atomic_t g_is_running = 1;
+/* 1: Interrupt signal */
+volatile sig_atomic_t g_int_signal = 0;
 
 /******************************************************************************
  *                           FUNCTION DECLARATIONS                            *
@@ -261,7 +260,7 @@ int main()
      *                           STEP 9: MAIN LOOP                            *
      **************************************************************************/
 
-    while (g_is_running && (ret != -1))
+    while (!g_int_signal && !g_window_closed && (ret != -1))
     {
         ret = wl_display_dispatch_pending(p_wl_display->p_display);
 
@@ -348,5 +347,5 @@ void sigint_handler(int signum, siginfo_t * p_info, void * p_ptr)
     UNUSED(p_info);
     UNUSED(signum);
 
-    g_is_running = 0;
+    g_int_signal = 1;
 }
