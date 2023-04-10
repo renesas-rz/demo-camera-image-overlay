@@ -9,10 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
-#include <semaphore.h>
-
-#include <wayland-client.h>
-#include <wayland-egl.h>
+#include <pthread.h>
 
 #include <drm/drm_fourcc.h>
 
@@ -38,7 +35,6 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <sys/types.h>
 
 #include <linux/videodev2.h>
 
@@ -64,11 +60,9 @@
 
 /* The sample app is tested OK with:
  *   - Logitech C270 HD Webcam.
- *   - Logitech C920 HD Pro Webcam [1].
+ *   - Logitech C920 HD Pro Webcam.
  *   - Logitech C930e Business Webcam.
- *   - Logitech BRIO Ultra HD Pro Business Webcam.
- *
- * [1] Need to run the app multiple times to get good buffer from the camera */
+ *   - Logitech BRIO Ultra HD Pro Business Webcam */
 #define USB_CAMERA_FD "/dev/video0"
 
 /* The number of buffers to be allocated for the camera */
@@ -85,7 +79,12 @@
 /* The number of buffers to be allocated for output port of media component */
 #define H264_BUFFER_COUNT 2
 
-#define H264_BITRATE 1572864 /* 1.5 Mbit/s */
+/* The bitrate is related to the quality of output file and compression level
+ * of video encoder. For example:
+ *   - With 1 Mbit/s, the encoder produces ~1.2 MB of data for 10-second video.
+ *   - With 5 Mbit/s, the encoder produces ~6 MB of data for 10-second video
+ *                                          and the quality should be better */
+#define H264_BITRATE 5000000 /* 5 Mbit/s */
 
 #define H264_FILE_NAME "out-h264-640x480.264"
 
@@ -252,12 +251,18 @@
 
 
 /* Introduction to:
- *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nBitrate
- *   (OMX_VIDEO_PORTDEFINITIONTYPE::nBitrate)
+ *   OMX_VIDEO_PARAM_BITRATETYPE::nTargetBitrate
  *
- * According to OMX IL specification 1.1.2, 'nBitrate' is the bitrate in bits
- * per second of the frame to be used on the port which handles compressed
- * data */
+ * According to OMX IL specification 1.1.2, 'nTargetBitrate' is the bitrate in
+ * bits per second of the frame to be used on the port which handles compressed
+ * data.
+ *
+ * 'nTargetBitrate' is the same as
+ * 'OMX_PARAM_PORTDEFINITIONTYPE::format::video::nBitrate'.
+ * When either is updated, the other is updated with the same value
+ *
+ * Note: Section 6.7.14 in document 'R01USxxxxEJxxxx_h264e_v1.0.pdf'
+ * shows valid settings of the bitrate for video encoder */
 
 
 /* Introduction to:
@@ -285,6 +290,13 @@
  *   - ROUND_UP(1920, 32) -> 1920 */
 #define ROUND_UP(VAL, RND) (((VAL) + (RND) - 1) & (~((RND) - 1)))
 
+/* The macro is used to populate 'nSize' and 'nVersion' fields of 'P_STRUCT'
+ * before passing it to one of the below functions:
+ *   - OMX_GetConfig
+ *   - OMX_SetConfig
+ *   - OMX_GetParameter
+ *   - OMX_SetParameter
+ */
 #define OMX_INIT_STRUCTURE(P_STRUCT)                                \
 {                                                                   \
     memset((P_STRUCT), 0, sizeof(*(P_STRUCT)));                     \
@@ -340,6 +352,44 @@ typedef struct
     size_t size;
 
 } v4l2_dmabuf_exp_t;
+
+/************************ FOR QUEUE (NOT THREAD-SAFE) *************************/
+
+/* Circular queue data structure.
+ *
+ * https://www.programiz.com/dsa/queue
+ * https://www.programiz.com/dsa/circular-queue */
+typedef struct
+{
+    /* An array which contains 'elm_cnt' elements of 'elm_size' bytes each */
+    void * p_array;
+
+    uint32_t elm_cnt;
+    uint32_t elm_size;
+
+    /* An index which tracks the first element in queue */
+    int front_idx;
+
+    /* An index which tracks the last element in queue */
+    int rear_idx;
+
+} queue_t;
+
+/********************************** FOR OMX ***********************************/
+
+/* This structure is shared between OMX's callbacks */
+typedef struct
+{
+    queue_t * p_in_queue;
+    queue_t * p_out_queue;
+
+    pthread_mutex_t * p_mut_in;
+    pthread_mutex_t * p_mut_out;
+
+    pthread_cond_t * p_cond_in_available;
+    pthread_cond_t * p_cond_out_available;
+
+} omx_data_t;
 
 /******************************* FOR OPENGL ES ********************************/
 
@@ -405,53 +455,59 @@ typedef struct
 
 } mmngr_buf_t;
 
-/****************************** FOR APPLICATION *******************************/
+/******************************** FOR THREADS *********************************/
 
-/* For threads and OMX's callbacks */
+/* This structure is for input thread */
 typedef struct
 {
     /* USB camera */
     int cam_fd;
 
     /* YUYV buffers */
-    uint32_t yuyv_buf_cnt;
-
     v4l2_dmabuf_exp_t * p_yuyv_bufs;
-    EGLImageKHR       * p_yuyv_imgs;
-    GLuint            * p_yuyv_texs;
 
     /* NV12 buffers */
-    uint32_t nv12_buf_cnt;
-
     mmngr_buf_t * p_nv12_bufs;
-    EGLImageKHR * p_nv12_imgs;
-    GLuint      * p_nv12_texs;
-
-    /* Framebuffers */
-    GLuint * p_nv12_fbs;
-
-    /* EGL display connection */
-    EGLDisplay display;
-
-    /* Resources for OpenGL ES */
-    gl_resources_t gl_resources;
 
     /* Handle of media component */
     OMX_HANDLETYPE handle;
 
-    /* File descriptor for storing H.264 data */
-    FILE * p_h264_fd;
+    /* Buffers for input port */
+    OMX_BUFFERHEADERTYPE ** pp_bufs;
 
-    /* Buffers for input and output ports */
-    OMX_BUFFERHEADERTYPE ** pp_in_bufs;
-    OMX_BUFFERHEADERTYPE ** pp_out_bufs;
+    /* The queue contains some buffers in 'pp_bufs' ready to be overlaid and
+     * sent to input port */
+    queue_t * p_queue;
 
-    /* The semaphore structures are used to confirm the completion of
-     * transmission of NV12 data and reception of H.264 data */
-    sem_t sem_nv12_done;
-    sem_t sem_h264_done;
+    /* The mutex structure is used to synchronize 'wait' and 'signal' events
+     * of 'p_cond_available' */
+    pthread_mutex_t * p_mutex;
 
-} app_t;
+    /* When signaled, the condition variable confirms there is a possible
+     * buffer in 'p_queue' */
+    pthread_cond_t * p_cond_available;
+
+} in_data_t;
+
+/* This structure is for output thread */
+typedef struct
+{
+    /* Handle of media component */
+    OMX_HANDLETYPE handle;
+
+    /* This queue contains some buffers received from output port and ready
+     * to be written to output file */
+    queue_t * p_queue;
+
+    /* The mutex structure is used to synchronize 'wait' and 'signal' events
+     * of 'p_cond_available' */
+    pthread_mutex_t * p_mutex;
+
+    /* When signaled, the condition variable confirms there is a possible
+     * buffer in 'p_queue' */
+    pthread_cond_t * p_cond_available;
+
+} out_data_t;
 
 /******************************************************************************
  *                              GLOBAL VARIABLES                              *
@@ -556,6 +612,33 @@ bool v4l2_enable_capturing(int dev_fd);
 /* This function disables capturing process on V4L2 device */
 bool v4l2_disable_capturing(int dev_fd);
 
+/************************ FOR QUEUE (NOT THREAD-SAFE) *************************/
+
+/* Create an empty queue whose size is ('elm_cnt' * 'elm_size') bytes */
+queue_t queue_create_empty(uint32_t elm_cnt, uint32_t elm_size);
+
+/* Create a full queue whose content is a shallow copy of 'p_array' */
+queue_t queue_create_full(const void * p_array,
+                          uint32_t elm_cnt, uint32_t elm_size);
+
+/* Delete queue.
+ * Note: This function will deallocate 'p_queue->p_array' */
+void queue_delete(queue_t * p_queue);
+
+/* Check if queue is empty or not? */
+bool queue_is_empty(const queue_t * p_queue);
+
+/* Check if queue is full or not? */
+bool queue_is_full(const queue_t * p_queue);
+
+/* Remove an element from the front of the queue. Then, return its address.
+ * Note: Return non-NULL value if successful */
+void * queue_dequeue(queue_t * p_queue);
+
+/* Add a shallow copy of element (pointed by 'p_elm') to the end of the queue.
+ * Note: Size of the element must be equal to 'p_queue->elm_size' */
+bool queue_enqueue(queue_t * p_queue, const void * p_elm);
+
 /********************************** FOR OMX ***********************************/
 
 /* The method is used to notify the application when an event of interest
@@ -584,7 +667,7 @@ OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
  * shall handle any errors generated internally */
 OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
                                     OMX_PTR pAppData,
-                                    OMX_BUFFERHEADERTYPE* pBuffer);
+                                    OMX_BUFFERHEADERTYPE * pBuffer);
 
 /* The method is used to return filled buffers from an output port back to
  * the application for emptying and then reuse.
@@ -597,7 +680,7 @@ OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
  * shall handle any errors generated internally */
 OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent,
                                    OMX_PTR pAppData,
-                                   OMX_BUFFERHEADERTYPE* pBuffer);
+                                   OMX_BUFFERHEADERTYPE * pBuffer);
 
 /* This method blocks calling thread until the component is in state 'state'
  * (based on section 3.2.2.13.2 in OMX IL specification 1.1.2) */
@@ -650,6 +733,15 @@ void omx_dealloc_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
  * Note: Make sure the length of 'pp_bufs' is equal to 'nBufferCountActual' */
 void omx_dealloc_all_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
                                OMX_BUFFERHEADERTYPE ** pp_bufs);
+
+/* Get index of element 'p_buf' in array 'pp_bufs'.
+ * Return non-negative value if successful */
+int omx_get_index(OMX_BUFFERHEADERTYPE * p_buf,
+                  OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count);
+
+/* Send buffers in 'pp_bufs' to output port */
+bool omx_fill_buffers(OMX_HANDLETYPE handle,
+                      OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count);
 
 /********************************** FOR EGL ***********************************/
 
@@ -764,6 +856,20 @@ mmngr_buf_t * mmngr_alloc_nv12_dmabufs(uint32_t count, size_t nv12_size);
 /* Deallocate dmabufs (allocated by 'mmngr_alloc_nv12_dmabufs') */
 void mmngr_dealloc_nv12_dmabufs(mmngr_buf_t * p_bufs, uint32_t count);
 
+/******************************** FOR THREADS *********************************/
+
+/* Try to call 'OMX_EmptyThisBuffer' whenerver there is an available
+ * input buffer and interrupt signal is not raised.
+ *
+ * Warning: Only create 1 thread for this routine */
+void * thread_input(void * p_param);
+
+/* Try to call 'OMX_FillThisBuffer' whenever there is an available
+ * output buffer and End-of-Stream event is not raised.
+ *
+ * Warning: Only create 1 thread for this routine */
+void * thread_output(void * p_param);
+
 /****************************** FOR FILE ACCESS *******************************/
 
 /* Read file's contents.
@@ -815,24 +921,26 @@ void errno_print();
 
 int main(int argc, char ** pp_argv)
 {
-    /* true:  The main loop is running.
-     * false: The main loop just stopped */
-    bool is_running = true;
-
-    /* true: The main loop runs for the first time */
-    bool is_first_run = true;
-
     /* Interrupt signal */
     struct sigaction sig_act;
 
-    /* Shared data between threads and OMX's callbacks */
-    app_t app;
+    /* File descriptor of camera */
+    int cam_fd = -1;
 
-    /* Variables used by V4L2 */
-    uint32_t index = 0;
-
+    /* Data format of camera */
     struct v4l2_format cam_fmt;
-    struct v4l2_buffer cam_buf;
+
+    /* YUYV buffers */
+    uint32_t index   = 0;
+    uint32_t buf_cnt = 0;
+
+    v4l2_dmabuf_exp_t * p_yuyv_bufs = NULL;
+
+    /* NV12 buffers */
+    mmngr_buf_t * p_nv12_bufs = NULL;
+
+    /* Handle of media component */
+    OMX_HANDLETYPE handle;
 
     /* Callbacks used by media component */
     OMX_CALLBACKTYPE callbacks =
@@ -842,8 +950,32 @@ int main(int argc, char ** pp_argv)
         .FillBufferDone  = omx_fill_buffer_done
     };
 
-    /* Input port of media component */
-    OMX_PARAM_PORTDEFINITIONTYPE in_port;
+    /* Buffers for input and output ports */
+    OMX_BUFFERHEADERTYPE ** pp_in_bufs  = NULL;
+    OMX_BUFFERHEADERTYPE ** pp_out_bufs = NULL;
+
+    /* Queues for buffers of input and output ports */
+    queue_t in_queue;
+    queue_t out_queue;
+
+    /* Shared data between OMX's callbacks */
+    omx_data_t omx_data;
+
+    /* Data for threads */
+    in_data_t  in_data;
+    out_data_t out_data;
+
+    /* Threads */
+    pthread_t thread_in;
+    pthread_t thread_out;
+
+    /* Mutexes for condition variables */
+    pthread_mutex_t mut_in;
+    pthread_mutex_t mut_out;
+
+    /* Condition variables */
+    pthread_cond_t cond_in_available;
+    pthread_cond_t cond_out_available;
 
     /**************************************************************************
      *                STEP 1: SET UP INTERRUPT SIGNAL HANDLER                 *
@@ -857,107 +989,64 @@ int main(int argc, char ** pp_argv)
     sigaction(SIGQUIT, &sig_act, NULL);
 
     /**************************************************************************
-     *                          STEP 2: SET UP V4L2                           *
+     *                       STEP 2: SET UP V4L2 DEVICE                       *
      **************************************************************************/
 
-    /* Open the camera */
-    app.cam_fd = v4l2_open_dev(USB_CAMERA_FD);
-    assert(app.cam_fd != -1);
+    /* Open camera */
+    cam_fd = v4l2_open_dev(USB_CAMERA_FD);
+    assert(cam_fd != -1);
 
-    /* Verify the camera */
-    assert(v4l2_verify_dev(app.cam_fd));
+    /* Verify camera */
+    assert(v4l2_verify_dev(cam_fd));
 
-    /* Print information of the camera */
-    v4l2_print_caps(app.cam_fd);
+    /* Print information of camera */
+    v4l2_print_caps(cam_fd);
 
-    /* Set format for the camera */
-    assert(v4l2_set_format(app.cam_fd,
+    /* Set format for camera */
+    assert(v4l2_set_format(cam_fd,
                            FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
                            V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE));
 
-    /* Confirm the new format */
-    assert(v4l2_get_format(app.cam_fd, &cam_fmt));
+    /* Confirm new format */
+    assert(v4l2_get_format(cam_fd, &cam_fmt));
     assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH_IN_BYTES);
     assert(cam_fmt.fmt.pix.sizeimage    == YUYV_FRAME_SIZE_IN_BYTES);
     assert(cam_fmt.fmt.pix.pixelformat  == V4L2_PIX_FMT_YUYV);
     assert(cam_fmt.fmt.pix.field        == V4L2_FIELD_NONE);
 
-    /* Set framerate for the camera */
-    assert(v4l2_set_framerate(app.cam_fd, FRAMERATE));
+    /* Set framerate for camera */
+    assert(v4l2_set_framerate(cam_fd, FRAMERATE));
 
-    /* Print format of the camera to console */
-    v4l2_print_format(app.cam_fd);
+    /* Print format of camera to console */
+    v4l2_print_format(cam_fd);
 
-    /* Print framerate of the camera to console */
-    v4l2_print_framerate(app.cam_fd);
+    /* Print framerate of camera to console */
+    v4l2_print_framerate(cam_fd);
 
     /**************************************************************************
-     *                STEP 3: ALLOCATE YUYV BUFFERS FROM V4L2                 *
+     *             STEP 3: ALLOCATE YUYV BUFFERS FROM V4L2 DEVICE             *
      **************************************************************************/
 
-    /* Allocate buffers for the camera */
-    app.yuyv_buf_cnt = YUYV_BUFFER_COUNT;
+    buf_cnt = YUYV_BUFFER_COUNT;
+    p_yuyv_bufs = v4l2_alloc_dmabufs(cam_fd, &buf_cnt);
 
-    app.p_yuyv_bufs = v4l2_alloc_dmabufs(app.cam_fd, &(app.yuyv_buf_cnt));
-    assert(app.yuyv_buf_cnt == YUYV_BUFFER_COUNT);
+    assert(buf_cnt == YUYV_BUFFER_COUNT);
 
-    for (index = 0; index < app.yuyv_buf_cnt; index++)
+    for (index = 0; index < YUYV_BUFFER_COUNT; index++)
     {
-        assert(app.p_yuyv_bufs[index].size == YUYV_FRAME_SIZE_IN_BYTES);
+        assert(p_yuyv_bufs[index].size == YUYV_FRAME_SIZE_IN_BYTES);
     }
 
     /**************************************************************************
-     *                    STEP 4: SET UP EGL AND OPENGL ES                    *
+     *               STEP 4: USE MMNGR TO ALLOCATE NV12 BUFFERS               *
      **************************************************************************/
 
-    /* Create EGL display */
-    app.display = egl_create_display();
-    assert(app.display != EGL_NO_DISPLAY);
-
-    /* Initialize OpenGL ES and EGL extension functions */
-    assert(gl_init_ext_funcs());
-    assert(egl_init_ext_funcs(app.display));
-
-    /* Create resources needed for rendering */
-    app.gl_resources = gl_create_resources();
-
-    /* Make sure Viewport matches the width and height of YUYV buffer */
-    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+    p_nv12_bufs = mmngr_alloc_nv12_dmabufs(NV12_BUFFER_COUNT,
+                                           NV12_FRAME_SIZE_IN_BYTES);
+    assert(p_nv12_bufs != NULL);
 
     /**************************************************************************
-     *               STEP 5: CREATE TEXTURES FROM YUYV BUFFERS                *
-     **************************************************************************/
-
-    /* Exit program if size of YUYV buffer is not aligned to page size.
-     *
-     * Mali library requires that both address and size of dmabuf must be
-     * multiples of page size.
-     *
-     * With dimension 640x480, size of plane 1 (UV plane) of NV12 buffer
-     * is 153,600 bytes.
-     * Since this size is not a multiple of page size, the Mali library will
-     * output the following messages when dmabuf of plane 1 is imported to it:
-     *
-     *  [   28.144983] sg_dma_len(s)=153600 is not a multiple of PAGE_SIZE
-     *  [   28.151050] WARNING: CPU: 1 PID: 273 at mali_kbase_mem_linux.c:1184
-     *                 kbase_mem_umm_map_attachment+0x1a8/0x270 [mali_kbase]
-     *  ... */
-    assert(page_size_is_size_aligned(YUYV_FRAME_SIZE_IN_BYTES));
-
-    /* Create YUYV EGLImage objects */
-    app.p_yuyv_imgs = egl_create_yuyv_images(app.display,
-                                             FRAME_WIDTH_IN_PIXELS,
-                                             FRAME_HEIGHT_IN_PIXELS,
-                                             app.p_yuyv_bufs,
-                                             app.yuyv_buf_cnt);
-    assert(app.p_yuyv_imgs != NULL);
-
-    /* Create YUYV textures */
-    app.p_yuyv_texs = gl_create_textures(app.p_yuyv_imgs, app.yuyv_buf_cnt);
-    assert(app.p_yuyv_texs != NULL);
-
-    /**************************************************************************
-     *                         STEP 6: SET UP OMX IL                          *
+     *                         STEP 5: SET UP OMX IL                          *
      **************************************************************************/
 
     /* Initialize OMX IL core */
@@ -965,231 +1054,159 @@ int main(int argc, char ** pp_argv)
 
     /* Locate Renesas's H.264 encoder.
      * If successful, the component will be in state LOADED */
-    assert(OMX_ErrorNone == OMX_GetHandle(&(app.handle),
+    assert(OMX_ErrorNone == OMX_GetHandle(&handle,
                                           RENESAS_VIDEO_ENCODER_NAME,
-                                          (OMX_PTR)&app, &callbacks));
+                                          (OMX_PTR)&omx_data, &callbacks));
 
     /* Print role of the component to console */
-    omx_print_mc_role(app.handle);
+    omx_print_mc_role(handle);
 
     /* Configure input port */
-    assert(omx_set_in_port_fmt(app.handle,
+    assert(omx_set_in_port_fmt(handle,
                                FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
                                OMX_COLOR_FormatYUV420SemiPlanar, FRAMERATE));
 
-    assert(omx_set_port_buf_cnt(app.handle, 0, NV12_BUFFER_COUNT));
+    assert(omx_set_port_buf_cnt(handle, 0, NV12_BUFFER_COUNT));
 
     /* Configure output port */
-    assert(omx_set_out_port_fmt(app.handle, H264_BITRATE, OMX_VIDEO_CodingAVC));
+    assert(omx_set_out_port_fmt(handle, H264_BITRATE, OMX_VIDEO_CodingAVC));
 
-    assert(omx_set_port_buf_cnt(app.handle, 1, H264_BUFFER_COUNT));
-
-    /**************************************************************************
-     *               STEP 7: USE MMNGR TO ALLOCATE NV12 BUFFERS               *
-     **************************************************************************/
-
-    /* Get input port */
-    assert(omx_get_port(app.handle, 0, &in_port));
-
-    /* Create dmabufs for NV12 buffers */
-    app.nv12_buf_cnt = in_port.nBufferCountActual;
-    app.p_nv12_bufs  = mmngr_alloc_nv12_dmabufs(app.nv12_buf_cnt,
-                                                NV12_FRAME_SIZE_IN_BYTES);
-    assert(app.p_nv12_bufs != NULL);
-
-    /**************************************************************************
-     *               STEP 8: CREATE TEXTURES FROM NV12 BUFFERS                *
-     **************************************************************************/
-
-    /* Create NV12 EGLImage objects */
-    app.p_nv12_imgs = egl_create_nv12_images(app.display,
-                                             FRAME_WIDTH_IN_PIXELS,
-                                             FRAME_HEIGHT_IN_PIXELS,
-                                             app.p_nv12_bufs,
-                                             app.nv12_buf_cnt);
-    assert(app.p_nv12_imgs != NULL);
-
-    /* Create NV12 textures */
-    app.p_nv12_texs = gl_create_textures(app.p_nv12_imgs, app.nv12_buf_cnt);
-    assert(app.p_nv12_texs != NULL);
-
-    /**************************************************************************
-     *             STEP 9: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
-     **************************************************************************/
-
-    /* Create framebuffers */
-    app.p_nv12_fbs = gl_create_framebuffers(app.p_nv12_texs, app.nv12_buf_cnt);
-    assert(app.p_nv12_fbs != NULL);
-
-    /**************************************************************************
-     *                STEP 10: ALLOCATE BUFFERS FOR INPUT PORT                *
-     **************************************************************************/
+    assert(omx_set_port_buf_cnt(handle, 1, H264_BUFFER_COUNT));
 
     /* Transition into state IDLE */
-    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+    assert(OMX_ErrorNone == OMX_SendCommand(handle,
                                             OMX_CommandStateSet,
                                             OMX_StateIdle, NULL));
 
-    /* Allocate buffers for input port */
-    app.pp_in_bufs = omx_use_buffers(app.handle, 0,
-                                     app.p_nv12_bufs,
-                                     app.nv12_buf_cnt);
-    assert(app.pp_in_bufs != NULL);
-
     /**************************************************************************
-     *               STEP 11: ALLOCATE BUFFERS FOR OUTPUT PORT                *
+     *                STEP 6: ALLOCATE BUFFERS FOR INPUT PORT                 *
      **************************************************************************/
 
-    /* Allocate buffers for output port */
-    app.pp_out_bufs = omx_alloc_buffers(app.handle, 1);
-    assert(app.pp_out_bufs != NULL);
+    pp_in_bufs = omx_use_buffers(handle, 0, p_nv12_bufs, NV12_BUFFER_COUNT);
+    assert(pp_in_bufs != NULL);
+
+    /* Create queue from these buffers */
+    in_queue = queue_create_full(pp_in_bufs, NV12_BUFFER_COUNT,
+                                 sizeof(OMX_BUFFERHEADERTYPE *));
+
+    /**************************************************************************
+     *                STEP 7: ALLOCATE BUFFERS FOR OUTPUT PORT                *
+     **************************************************************************/
+
+    pp_out_bufs = omx_alloc_buffers(handle, 1);
+    assert(pp_out_bufs != NULL);
+
+    /* Create empty queue whose size is equal to 'pp_out_bufs' */
+    out_queue = queue_create_empty(H264_BUFFER_COUNT,
+                                   sizeof(OMX_BUFFERHEADERTYPE *));
 
     /* Wait until the component is in state IDLE */
-    omx_wait_state(app.handle, OMX_StateIdle);
+    omx_wait_state(handle, OMX_StateIdle);
 
     /**************************************************************************
-     *             STEP 12: SET UP SHARED DATA FOR OMX CALLBACKS              *
+     *             STEP 8: CREATE MUTEXES AND CONDITION VARIABLES             *
      **************************************************************************/
 
-    /* Initialize semaphore structures with initial value 0.
-     * Note: They are to be shared between threads of this process */
-    sem_init(&(app.sem_nv12_done), 0, 0);
-    sem_init(&(app.sem_h264_done), 0, 0);
+    pthread_mutex_init(&mut_in, NULL);
+    pthread_mutex_init(&mut_out, NULL);
 
-    /* Open file for writing H.264 data */
-    app.p_h264_fd = fopen(H264_FILE_NAME, "w");
+    pthread_cond_init(&cond_in_available, NULL);
+    pthread_cond_init(&cond_out_available, NULL);
 
     /**************************************************************************
-     *               STEP 13: MAKE OMX READY TO RECEIVE BUFFERS               *
+     *          STEP 9: PREPARE SHARED DATA BETWEEN OMX'S CALLBACKS           *
+     **************************************************************************/
+
+    omx_data.p_in_queue           = &in_queue;
+    omx_data.p_out_queue          = &out_queue;
+    omx_data.p_mut_in             = &mut_in;
+    omx_data.p_mut_out            = &mut_out;
+    omx_data.p_cond_in_available  = &cond_in_available;
+    omx_data.p_cond_out_available = &cond_out_available;
+
+    /**************************************************************************
+     *            STEP 10: MAKE OMX READY TO SEND/RECEIVE BUFFERS             *
      **************************************************************************/
 
     /* Transition into state EXECUTING */
-    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+    assert(OMX_ErrorNone == OMX_SendCommand(handle,
                                             OMX_CommandStateSet,
                                             OMX_StateExecuting, NULL));
-    omx_wait_state(app.handle, OMX_StateExecuting);
+    omx_wait_state(handle, OMX_StateExecuting);
+
+    /* Send buffers in 'pp_out_bufs' to output port */
+    assert(omx_fill_buffers(handle, pp_out_bufs, H264_BUFFER_COUNT));
 
     /**************************************************************************
-     *                STEP 14: MAKE V4L2 READY TO CAPTURE DATA                *
+     *                STEP 11: MAKE V4L2 READY TO CAPTURE DATA                *
      **************************************************************************/
 
-    /* Note: For capturing applications, it is customary to first enqueue all
+    /* For capturing applications, it is customary to first enqueue all
      * mapped buffers, then to start capturing and enter the read loop.
      *
      * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/mmap.html */
-    assert(v4l2_enqueue_bufs(app.cam_fd, app.yuyv_buf_cnt));
+    assert(v4l2_enqueue_bufs(cam_fd, YUYV_BUFFER_COUNT));
 
     /* Start capturing */
-    assert(v4l2_enable_capturing(app.cam_fd));
+    assert(v4l2_enable_capturing(cam_fd));
 
     /**************************************************************************
-     *                         STEP 15: RUN MAIN LOOP                         *
+     *                 STEP 12: PREPARE DATA FOR INPUT THREAD                 *
      **************************************************************************/
 
-    while (is_running)
-    {
-        /* Receive buffer from the camera */
-        assert(v4l2_dequeue_buf(app.cam_fd, &cam_buf));
+    in_data.cam_fd           = cam_fd;
+    in_data.p_yuyv_bufs      = p_yuyv_bufs;
+    in_data.p_nv12_bufs      = p_nv12_bufs;
+    in_data.handle           = handle;
+    in_data.pp_bufs          = pp_in_bufs;
+    in_data.p_queue          = &in_queue;
+    in_data.p_mutex          = &mut_in;
+    in_data.p_cond_available = &cond_in_available;
 
-        /* Bind it as the active framebuffer.
-         * All subsequent rendering operations will now render to NV12 texture:
-         * https://learnopengl.com/Advanced-OpenGL/Framebuffers */
-        glBindFramebuffer(GL_FRAMEBUFFER, app.p_nv12_fbs[0]);
+    /**************************************************************************
+     *                STEP 13: PREPARE DATA FOR OUTPUT THREAD                 *
+     **************************************************************************/
 
-        /* Convert YUYV texture to NV12 texture */
-        gl_conv_yuyv_to_nv12(app.p_yuyv_texs[cam_buf.index], app.gl_resources);
+    out_data.handle           = handle;
+    out_data.p_queue          = &out_queue;
+    out_data.p_mutex          = &mut_out;
+    out_data.p_cond_available = &cond_out_available;
 
-        /* Draw rectangle on NV12 texture */
-        gl_draw_rectangle(app.gl_resources);
+    /**************************************************************************
+     *                          STEP 14: RUN THREADS                          *
+     **************************************************************************/
 
-        /* Send buffer 'app.pp_in_bufs[0]' to the input port of the component.
-         * If the buffer contains data, 'app.pp_in_bufs[0]->nFilledLen' will not
-         * be zero.
-         *
-         * TODO: Buffer 'app.pp_in_bufs[0]' should have a flag so that we can
-         * know whether it's okay to pass it to 'OMX_EmptyThisBuffer'
-         * (see section 2.2.12 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf')
-         *
-         * Note: 'app.pp_in_bufs[0]->nFilledLen' is set to 0 when
-         * callback 'OMX_CALLBACKTYPE::EmptyBufferDone' is returned */
-        app.pp_in_bufs[0]->nFilledLen = NV12_FRAME_SIZE_IN_BYTES;
+    pthread_create(&thread_in, NULL, thread_input, &in_data);
+    pthread_create(&thread_out, NULL, thread_output, &out_data);
 
-        /* Section 6.14.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
-        app.pp_in_bufs[0]->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
-        if (g_int_signal)
-        {
-            app.pp_in_bufs[0]->nFlags |= OMX_BUFFERFLAG_EOS;
-            is_running = false;
-        }
+    /**************************************************************************
+     *                 STEP 15: WAIT UNTIL END-OF-STREAM EVENT                 *
+     **************************************************************************/
 
-        assert(OMX_ErrorNone ==
-               OMX_EmptyThisBuffer(app.handle, app.pp_in_bufs[0]));
-
-        /* Send buffer 'app.pp_out_bufs[0]' to the output port of the component.
-         * It should contain Data NAL.
-         *
-         * If 'app.pp_out_bufs[0]->nOutputPortIndex' is not a valid output port,
-         * the component returns 'OMX_ErrorBadPortIndex'.
-         *
-         * TODO: Each buffer in 'app.pp_out_bufs' should have a flag so that we
-         * can know whether it's okay to pass these to 'OMX_FillThisBuffer'
-         * (see section 2.2.13 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf') */
-        assert(OMX_ErrorNone ==
-               OMX_FillThisBuffer(app.handle, app.pp_out_bufs[0]));
-
-        if (is_first_run || !is_running)
-        {
-            is_first_run = false;
-
-            /* Send buffer 'app.pp_out_bufs[1]' to the output port of the
-             * component.
-             *
-             * When the component encodes for the first time, the buffer should
-             * contain SPS NAL and PPS NAL.
-             * When user presses Ctrl-C, the buffer should contain
-             * End-of-Sequence NAL and End-of-Stream NAL (section 3.1.2 in
-             * document 'R01USxxxxEJxxxx_h264e_v1.0.pdf')
-             */
-            assert(OMX_ErrorNone ==
-                   OMX_FillThisBuffer(app.handle, app.pp_out_bufs[1]));
-
-            sem_wait(&(app.sem_h264_done));
-        }
-
-        /* Wait until the component fills data to 'app.pp_out_bufs[0]'
-         * (see callback 'FillBufferDone').
-         *
-         * TODOs: Should create 2 threads, one is for sending NV12 buffers to
-         * input port and one is for requesting H.264 data from output port */
-        sem_wait(&(app.sem_nv12_done));
-        sem_wait(&(app.sem_h264_done));
-
-        /* Request buffer from camera */
-        assert(v4l2_enqueue_buf(app.cam_fd, cam_buf.index));
-    }
+    pthread_join(thread_in, NULL);
+    pthread_join(thread_out, NULL);
 
     /* Stop capturing */
-    assert(v4l2_disable_capturing(app.cam_fd));
+    assert(v4l2_disable_capturing(cam_fd));
 
     /**************************************************************************
      *                    STEP 16: CLEAN UP OMX' RESOURCES                    *
      **************************************************************************/
 
-    /* Close file which stores H.264 data */
-    fclose(app.p_h264_fd);
+    pthread_mutex_destroy(&mut_in);
+    pthread_mutex_destroy(&mut_out);
 
-    /* Destroy semaphore structures */
-    sem_destroy(&(app.sem_nv12_done));
-    sem_destroy(&(app.sem_h264_done));
+    pthread_cond_destroy(&cond_in_available);
+    pthread_cond_destroy(&cond_out_available);
 
     /* Transition into state IDLE */
-    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+    assert(OMX_ErrorNone == OMX_SendCommand(handle,
                                             OMX_CommandStateSet,
                                             OMX_StateIdle, NULL));
-    omx_wait_state(app.handle, OMX_StateIdle);
+    omx_wait_state(handle, OMX_StateIdle);
 
     /* Transition into state LOADED */
-    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+    assert(OMX_ErrorNone == OMX_SendCommand(handle,
                                             OMX_CommandStateSet,
                                             OMX_StateLoaded, NULL));
 
@@ -1200,50 +1217,33 @@ int main(int argc, char ** pp_argv)
      *
      * The component shall free both the buffers and the buffer headers if it
      * allocated both the buffers and buffer headers ('OMX_AllocateBuffer') */
-    omx_dealloc_all_port_bufs(app.handle, 0, app.pp_in_bufs);
-    omx_dealloc_all_port_bufs(app.handle, 1, app.pp_out_bufs);
+    omx_dealloc_all_port_bufs(handle, 0, pp_in_bufs);
+    omx_dealloc_all_port_bufs(handle, 1, pp_out_bufs);
+
+    queue_delete(&in_queue);
+    queue_delete(&out_queue);
 
     /* Wait until the component is in state LOADED */
-    omx_wait_state(app.handle, OMX_StateLoaded);
+    omx_wait_state(handle, OMX_StateLoaded);
 
     /* Free the component's handle */
-    assert(OMX_FreeHandle(app.handle) == OMX_ErrorNone);
+    assert(OMX_FreeHandle(handle) == OMX_ErrorNone);
 
     /* Deinitialize OMX IL core */
     assert(OMX_Deinit() == OMX_ErrorNone);
 
-    /**************************************************************************
-     *                STEP 17: CLEAN UP OPENGL ES'S RESOURCES                 *
-     **************************************************************************/
-
-    /* Delete framebuffers and NV12 textures */
-    egl_delete_images(app.display, app.p_nv12_imgs, app.nv12_buf_cnt);
-
-    gl_delete_textures(app.p_nv12_texs, app.nv12_buf_cnt);
-    gl_delete_framebuffers(app.p_nv12_fbs, app.nv12_buf_cnt);
-
     /* Deallocate NV12 buffers */
-    mmngr_dealloc_nv12_dmabufs(app.p_nv12_bufs, app.nv12_buf_cnt);
-
-    /* Delete YUYV textures */
-    egl_delete_images(app.display, app.p_yuyv_imgs, app.yuyv_buf_cnt);
-    gl_delete_textures(app.p_yuyv_texs, app.yuyv_buf_cnt);
-
-    /* Delete resources for OpenGL ES */
-    gl_delete_resources(app.gl_resources);
-
-    /* Delete EGL display */
-    egl_delete_display(app.display);
+    mmngr_dealloc_nv12_dmabufs(p_nv12_bufs, NV12_BUFFER_COUNT);
 
     /**************************************************************************
-     *                   STEP 18: CLEAN UP V4L2'S RESOURCES                   *
+     *                   STEP 17: CLEAN UP V4L2'S RESOURCES                   *
      **************************************************************************/
 
     /* Clean up YUYV buffers */
-    v4l2_dealloc_dmabufs(app.p_yuyv_bufs, app.yuyv_buf_cnt);
+    v4l2_dealloc_dmabufs(p_yuyv_bufs, YUYV_BUFFER_COUNT);
 
     /* Close the camera */
-    close(app.cam_fd);
+    close(cam_fd);
 
     return 0;
 }
@@ -1815,6 +1815,210 @@ bool v4l2_disable_capturing(int dev_fd)
     return true;
 }
 
+/************************ FOR QUEUE (NOT THREAD-SAFE) *************************/
+
+queue_t queue_create_empty(uint32_t elm_cnt, uint32_t elm_size)
+{
+    queue_t queue;
+
+    /* Front = -2
+     * ↓
+     * ┌┄┄┄┄┬┄┄┄┄┬────┬────┬────┬────┬────┬────┬────┬────┐ elm_cnt  = 4
+     * ┊    ┊    │    │    │    │    │    │    │    │    │ elm_size = 2
+     * └┄┄┄┄┴┄┄┄┄┴────┴────┴────┴────┴────┴────┴────┴────┘
+     * ↑         ├─────────┼─────────┼─────────┼─────────┤
+     * Rear = -2  Element 1 Element 2 Element 3 Element 4 */
+
+    /* Check parameters */
+    assert((elm_cnt > 0) && (elm_size > 0));
+
+    queue.elm_cnt  = elm_cnt;
+    queue.elm_size = elm_size;
+    queue.p_array  = calloc(elm_cnt, elm_size);
+
+    /* Mark the queue as empty */
+    queue.front_idx = -1 * elm_size;
+    queue.rear_idx  = -1 * elm_size;
+
+    return queue;
+}
+
+queue_t queue_create_full(const void * p_array,
+                          uint32_t elm_cnt, uint32_t elm_size)
+{
+    queue_t queue;
+
+    /* Front = 0                           Rear = 6
+     * ↓                                   ↓
+     * ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐ elm_cnt  = 4
+     * │  A  │  B  │  C  │  D  │  E  │  F  │  G  │  H  │ elm_size = 2
+     * └─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
+     * ├───────────┼───────────┼───────────┼───────────┤
+     *   Element 1   Element 2   Element 3   Element 4 */
+
+    /* Check parameters */
+    assert((p_array != NULL) && (elm_cnt > 0) && (elm_size > 0));
+
+    /* Create empty queue */
+    queue = queue_create_empty(elm_cnt, elm_size);
+
+    /* Copy data from 'p_array' to 'queue.p_array' */
+    memcpy(queue.p_array, p_array, elm_cnt * elm_size);
+
+    /* Mark the queue as full */
+    queue.front_idx = 0;
+    queue.rear_idx  = (elm_cnt - 1) * elm_size;
+
+    return queue;
+}
+
+void queue_delete(queue_t * p_queue)
+{
+    /* Check parameter */
+    assert(p_queue != NULL);
+
+    /* Free entire array */
+    free(p_queue->p_array);
+
+    /* Deinitialize structure */
+    p_queue->p_array  = NULL;
+    p_queue->elm_cnt  = 0;
+    p_queue->elm_size = 0;
+
+    p_queue->front_idx = -1;
+    p_queue->rear_idx  = -1;
+}
+
+bool queue_is_empty(const queue_t * p_queue)
+{
+    /* Check parameter */
+    assert(p_queue != NULL);
+
+    /* Case 1: After calling function 'queue_create_empty'.
+     * Case 2: After dequeuing the last element (function 'queue_dequeue'):
+     *
+     *   Code snippets:
+     *
+     *     int16_t array[2] = { 1, 2 };
+     *     int16_t value1 = 0;
+     *     int16_t value2 = 0;
+     *
+     *     queue_t queue = queue_create_empty(3, sizeof(int16_t));
+     *     queue_enqueue(&queue, &(array[0]));
+     *     queue_enqueue(&queue, &(array[1]));
+     *
+     *     value1 = *((int16_t *)queue_dequeue(&queue));
+     *     value2 = *((int16_t *)queue_dequeue(&queue));
+     *
+     *   Result:
+     *
+     *     Front = -2
+     *     ↓
+     *     ┌┄┄┄┄┬┄┄┄┄┬─────┬─────┬─────┬─────┬─────┬─────┐ elm_cnt  = 3
+     *     │    ┊    │  A  │  B  │  C  │  D  │     │     │ elm_size = 2
+     *     └┄┄┄┄┴┄┄┄┄┴─────┴─────┴─────┴─────┴─────┴─────┘
+     *     ↑         ├───────────┼───────────┼───────────┤
+     *     Rear = -2   Element 1   Element 2   Element 3 */
+
+    return (p_queue->front_idx == (-1 * p_queue->elm_size));
+}
+
+bool queue_is_full(const queue_t * p_queue)
+{
+    /* Check parameter */
+    assert(p_queue != NULL);
+
+    /* Case 1: When latest element is at the end of queue and the app did not
+     * dequeue any elements from it (see function 'queue_create_full').
+     *
+     * Case 2: When latest element is right after oldest element:
+     *
+     *   Code snippets:
+     *
+     *     int16_t array[4] = { 1, 2, 3, 4 };
+     *
+     *     queue_t queue = queue_create_full(array,
+     *                                       sizeof(array) / sizeof(int16_t),
+     *                                       sizeof(int16_t));
+     *     int16_t value1 = *((int16_t *)queue_dequeue(&queue));
+     *
+     *     int16_t value2 = 5;
+     *     queue_enqueue(&queue, &value2);
+     *
+     *   Result:
+     *
+     *     Rear = 0    Front = 2
+     *     ↓           ↓
+     *     ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐ elm_cnt  = 4
+     *     │  I  │  K  │  C  │  D  │  E  │  F  │  G  │  H  │ elm_size = 2
+     *     └─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
+     *     ├───────────┼───────────┼───────────┼───────────┤
+     *       Element 1   Element 2   Element 3   Element 4 */
+
+    const uint32_t last_idx = (p_queue->elm_cnt - 1) * p_queue->elm_size;
+
+    return ((p_queue->front_idx == 0) && (p_queue->rear_idx == last_idx)) ||
+           (p_queue->front_idx == (p_queue->rear_idx + p_queue->elm_size));
+}
+
+void * queue_dequeue(queue_t * p_queue)
+{
+    void * p_elm = NULL;
+
+    if (queue_is_empty(p_queue))
+    {
+        printf("Error: Queue is empty\n");
+    }
+    else
+    {
+        p_elm = p_queue->p_array + p_queue->front_idx;
+
+        if (p_queue->front_idx == p_queue->rear_idx)
+        {
+            /* Initialize the queue if there is only 1 element in it */
+            p_queue->front_idx = -1 * p_queue->elm_size;
+            p_queue->rear_idx  = -1 * p_queue->elm_size;
+        }
+        else
+        {
+            /* Adjust 'front_idx' for next function call 'queue_dequeue' */
+            p_queue->front_idx = (p_queue->front_idx + p_queue->elm_size) %
+                                 (p_queue->elm_cnt * p_queue->elm_size);
+        }
+    }
+
+    return p_elm;
+}
+
+bool queue_enqueue(queue_t * p_queue, const void * p_elm)
+{
+    bool is_success = true;
+
+    if (queue_is_full(p_queue))
+    {
+        printf("Error: Queue is full\n");
+        is_success = false;
+    }
+    else
+    {
+        if (p_queue->front_idx == (-1 * p_queue->elm_size))
+        {
+            /* The first element is about to be added to the queue.
+             * Let's adjust 'front_idx' for next function call 'queue_dequeue'
+             */
+            p_queue->front_idx = 0;
+        }
+
+        /* Add element to the end of the queue */
+        p_queue->rear_idx = (p_queue->rear_idx + p_queue->elm_size) %
+                            (p_queue->elm_cnt * p_queue->elm_size);
+
+        memcpy(p_queue->p_array + p_queue->rear_idx, p_elm, p_queue->elm_size);
+    }
+
+    return is_success;
+}
+
 /********************************** FOR OMX ***********************************/
 
 OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
@@ -1843,7 +2047,7 @@ OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
         case OMX_EventBufferFlag:
         {
             /* The buffer contains the last output picture data */
-            printf("End-of-Stream\n");
+            printf("OMX event: 'End-of-Stream'\n");
         }
         break;
 
@@ -1866,46 +2070,61 @@ OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
 
 OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
                                     OMX_PTR pAppData,
-                                    OMX_BUFFERHEADERTYPE* pBuffer)
+                                    OMX_BUFFERHEADERTYPE * pBuffer)
 {
-    app_t * p_data = (app_t *)pAppData;
-    if (p_data != NULL)
+    omx_data_t * p_data = (omx_data_t *)pAppData;
+
+    /* Check parameter */
+    assert(p_data != NULL);
+
+    if (pBuffer != NULL)
     {
-        /* TODO: Should enable the flag to allow 'pBuffer' to be used
-         * (see step 11.6) */
-        sem_post(&(p_data->sem_nv12_done));
+        assert(pthread_mutex_lock(p_data->p_mut_in) == 0);
+
+        /* At this point, the queue must not be full */
+        assert(!queue_is_full(p_data->p_in_queue));
+
+        /* Add 'pBuffer' to the queue */
+        assert(queue_enqueue(p_data->p_in_queue, &pBuffer));
+
+        /* Now, there is an element inside the queue.
+         * Input thread should woken up in case it's sleeping */
+        assert(pthread_cond_signal(p_data->p_cond_in_available) == 0);
+
+        assert(pthread_mutex_unlock(p_data->p_mut_in) == 0);
     }
 
-    printf("EmptyBufferDone is called\n");
+    printf("EmptyBufferDone exited\n");
     return OMX_ErrorNone;
 }
 
 OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent,
                                    OMX_PTR pAppData,
-                                   OMX_BUFFERHEADERTYPE* pBuffer)
+                                   OMX_BUFFERHEADERTYPE * pBuffer)
 {
-    app_t * p_data = (app_t *)pAppData;
-    if (p_data != NULL)
-    {
-        /* TODOs:
-         *   - Should enable the flag to allow 'pBuffer' to be used
-         *     (see step 11.7).
-         *
-         *   - This is a blocking call so the application should not attempt to
-         *     refill the buffers during this call, but should queue them and
-         *     refill them in another thread.
-         *
-         * For trial, we just write H.264 data to a file */
-        if ((pBuffer != NULL) && (pBuffer->nFilledLen > 0))
-        {
-            fwrite((char *)(pBuffer->pBuffer), sizeof(char),
-                   pBuffer->nFilledLen, p_data->p_h264_fd);
-        }
+    omx_data_t * p_data = (omx_data_t *)pAppData;
 
-        sem_post(&(p_data->sem_h264_done));
+    /* Check parameter */
+    assert(p_data != NULL);
+
+    if ((pBuffer != NULL) && (pBuffer->nFilledLen > 0))
+    {
+        assert(pthread_mutex_lock(p_data->p_mut_out) == 0);
+
+        /* Add this point, the queue must not be full */
+        assert(!queue_is_full(p_data->p_out_queue));
+
+        /* Add 'pBuffer' to the queue */
+        assert(queue_enqueue(p_data->p_out_queue, &pBuffer));
+
+        /* Now, there is an element inside the queue.
+         * Output thread should woken up in case it's sleeping */
+        assert(pthread_cond_signal(p_data->p_cond_out_available) == 0);
+
+        assert(pthread_mutex_unlock(p_data->p_mut_out) == 0);
     }
 
-    printf("FillBufferDone is called\n");
+    printf("FillBufferDone exited\n");
     return OMX_ErrorNone;
 }
 
@@ -1914,16 +2133,26 @@ void omx_wait_state(OMX_HANDLETYPE handle, OMX_STATETYPE state)
     OMX_ERRORTYPE omx_error = OMX_ErrorNone;
     OMX_STATETYPE omx_cur_state = OMX_StateInvalid;
 
-    do
+    while (true)
     {
         omx_error = OMX_GetState(handle, &omx_cur_state);
+
+        /* Exit if 'OMX_GetState' returns error */
         if (omx_error != OMX_ErrorNone)
         {
-            printf("Error: Failed to get current state of OMX MC\n");
+            printf("Error: Failed to get current state of media component\n");
             break;
         }
+
+        /* Exit if OMX has transitioned into desired state */
+        if (omx_cur_state == state)
+        {
+            break;
+        }
+
+        /* Wait for 10 ms to avoid wasting CPU cycles */
+        usleep(10000);
     }
-    while (omx_cur_state != state);
 }
 
 char * omx_state_to_str(OMX_STATETYPE state)
@@ -2176,7 +2405,7 @@ OMX_BUFFERHEADERTYPE ** omx_use_buffers(OMX_HANDLETYPE handle, OMX_U32 port_idx,
         return NULL;
     }
 
-    /* Allocate an array of struct 'OMX_BUFFERHEADERTYPE' */
+    /* Allocate an array of 'OMX_BUFFERHEADERTYPE *' */
     pp_bufs = (OMX_BUFFERHEADERTYPE **)
               malloc(count * sizeof(OMX_BUFFERHEADERTYPE *));
 
@@ -2224,8 +2453,10 @@ OMX_BUFFERHEADERTYPE ** omx_alloc_buffers(OMX_HANDLETYPE handle,
         return NULL;
     }
 
+    /* Allocate an array of 'OMX_BUFFERHEADERTYPE *' */
     pp_bufs = (OMX_BUFFERHEADERTYPE **)
               malloc(port.nBufferCountActual * sizeof(OMX_BUFFERHEADERTYPE *));
+
 
     for (index = 0; index < port.nBufferCountActual; index++)
     {
@@ -2281,6 +2512,51 @@ void omx_dealloc_all_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
         omx_dealloc_port_bufs(handle, port_idx, pp_bufs,
                               port.nBufferCountActual);
     }
+}
+
+int omx_get_index(OMX_BUFFERHEADERTYPE * p_buf,
+                  OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count)
+{
+    int ret = -1;
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert(p_buf != NULL);
+    assert((pp_bufs != NULL) && (count > 0));
+
+    for (index = 0; index < count; index++)
+    {
+        if (pp_bufs[index] == p_buf)
+        {
+            ret = index;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+bool omx_fill_buffers(OMX_HANDLETYPE handle,
+                      OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count)
+{
+    bool is_success = true;
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert((pp_bufs != NULL) && (count > 0));
+
+    for (index = 0; index < count; index++)
+    {
+        if (OMX_FillThisBuffer(handle, pp_bufs[index]) != OMX_ErrorNone)
+        {
+            printf("Error: Failed to send buffer '%d' to output port\n", index);
+
+            is_success = false;
+            break;
+        }
+    }
+
+    return is_success;
 }
 
 /********************************** FOR EGL ***********************************/
@@ -2366,8 +2642,8 @@ EGLDisplay egl_create_display()
     }
 
     /* Bind context without read and draw surfaces */
-    if (eglMakeCurrent(display, EGL_NO_SURFACE,
-                       EGL_NO_SURFACE, context) == EGL_FALSE)
+    if (EGL_FALSE ==
+        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context))
     {
         printf("Error: Failed to bind context without surfaces\n");
         return EGL_NO_DISPLAY;
@@ -3254,6 +3530,269 @@ void mmngr_dealloc_nv12_dmabufs(mmngr_buf_t * p_bufs, uint32_t count)
     free(p_bufs);
 }
 
+/******************************** FOR THREADS *********************************/
+
+void * thread_input(void * p_param)
+{
+    in_data_t * p_data = (in_data_t *)p_param;
+
+    /* true:  The loop is running.
+     * false: The loop just stopped */
+    bool is_running = true;
+
+    /* V4L2 buffer */
+    struct v4l2_buffer cam_buf;
+
+    /* Buffer of input port */
+    int index = -1;
+    OMX_BUFFERHEADERTYPE * p_buf = NULL;
+
+    /* EGL display connection */
+    EGLDisplay display = EGL_NO_DISPLAY;
+
+    /* Resources for OpenGL ES */
+    gl_resources_t gl_resources;
+
+    /* YUYV images and textures */
+    EGLImageKHR * p_yuyv_imgs = NULL;
+    GLuint      * p_yuyv_texs = NULL;
+
+    /* NV12 images, textures, and framebuffers */
+    EGLImageKHR * p_nv12_imgs = NULL;
+    GLuint      * p_nv12_texs = NULL;
+    GLuint      * p_nv12_fbs  = NULL;
+
+    /* Check parameter */
+    assert(p_data != NULL);
+
+    /**************************************************************************
+     *                    STEP 1: SET UP EGL AND OPENGL ES                    *
+     **************************************************************************/
+
+    /* Create EGL display */
+    display = egl_create_display();
+    assert(display != EGL_NO_DISPLAY);
+
+    /* Initialize OpenGL ES and EGL extension functions */
+    assert(gl_init_ext_funcs());
+    assert(egl_init_ext_funcs(display));
+
+    /* Create resources needed for rendering */
+    gl_resources = gl_create_resources();
+
+    /* Make sure Viewport matches the width and height of YUYV buffer */
+    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+
+    /**************************************************************************
+     *               STEP 2: CREATE TEXTURES FROM YUYV BUFFERS                *
+     **************************************************************************/
+
+    /* Exit program if size of YUYV buffer is not aligned to page size.
+     *
+     * Mali library requires that both address and size of dmabuf must be
+     * multiples of page size.
+     *
+     * With dimension 640x480, size of plane 1 (UV plane) of NV12 buffer
+     * is 153,600 bytes.
+     * Since this size is not a multiple of page size, the Mali library will
+     * output the following messages when dmabuf of plane 1 is imported to it:
+     *
+     *  [   28.144983] sg_dma_len(s)=153600 is not a multiple of PAGE_SIZE
+     *  [   28.151050] WARNING: CPU: 1 PID: 273 at mali_kbase_mem_linux.c:1184
+     *                 kbase_mem_umm_map_attachment+0x1a8/0x270 [mali_kbase]
+     *  ... */
+    assert(page_size_is_size_aligned(YUYV_FRAME_SIZE_IN_BYTES));
+
+    /* Create YUYV EGLImage objects */
+    p_yuyv_imgs = egl_create_yuyv_images(display,
+                                         FRAME_WIDTH_IN_PIXELS,
+                                         FRAME_HEIGHT_IN_PIXELS,
+                                         p_data->p_yuyv_bufs,
+                                         YUYV_BUFFER_COUNT);
+    assert(p_yuyv_imgs != NULL);
+
+    /* Create YUYV textures */
+    p_yuyv_texs = gl_create_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
+    assert(p_yuyv_texs != NULL);
+
+    /**************************************************************************
+     *               STEP 3: CREATE TEXTURES FROM NV12 BUFFERS                *
+     **************************************************************************/
+
+    /* Create NV12 EGLImage objects */
+    p_nv12_imgs = egl_create_nv12_images(display,
+                                         FRAME_WIDTH_IN_PIXELS,
+                                         FRAME_HEIGHT_IN_PIXELS,
+                                         p_data->p_nv12_bufs,
+                                         NV12_BUFFER_COUNT);
+    assert(p_nv12_imgs != NULL);
+
+    /* Create NV12 textures */
+    p_nv12_texs = gl_create_textures(p_nv12_imgs, NV12_BUFFER_COUNT);
+    assert(p_nv12_texs != NULL);
+
+    /**************************************************************************
+     *             STEP 4: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
+     **************************************************************************/
+
+    /* Create framebuffers */
+    p_nv12_fbs = gl_create_framebuffers(p_nv12_texs, NV12_BUFFER_COUNT);
+    assert(p_nv12_fbs != NULL);
+
+    /**************************************************************************
+     *                       STEP 5: THREAD'S MAIN LOOP                       *
+     **************************************************************************/
+
+    while (is_running)
+    {
+        assert(pthread_mutex_lock(p_data->p_mutex) == 0);
+
+        while (queue_is_empty(p_data->p_queue))
+        {
+            /* Thread will sleep until the queue is not empty */
+            assert(0 == pthread_cond_wait(p_data->p_cond_available,
+                                          p_data->p_mutex));
+        }
+
+        /* At this point, the queue must have something in it */
+        assert(!queue_is_empty(p_data->p_queue));
+
+        /* Receive buffer (of input port) from the queue */
+        p_buf = *(OMX_BUFFERHEADERTYPE **)(queue_dequeue(p_data->p_queue));
+        assert(p_buf != NULL);
+
+        assert(pthread_mutex_unlock(p_data->p_mutex) == 0);
+
+        /* Get buffer's index */
+        index = omx_get_index(p_buf, p_data->pp_bufs, NV12_BUFFER_COUNT);
+        assert(index != -1);
+
+        /* Receive camera's buffer */
+        assert(v4l2_dequeue_buf(p_data->cam_fd, &cam_buf));
+
+        /* Bind framebuffer.
+         * All subsequent rendering operations will now render to NV12 texture
+         * which is linked to the framebuffer (see above):
+         * https://learnopengl.com/Advanced-OpenGL/Framebuffers */
+        glBindFramebuffer(GL_FRAMEBUFFER, p_nv12_fbs[index]);
+
+        /* Convert YUYV texture to NV12 texture */
+        gl_conv_yuyv_to_nv12(p_yuyv_texs[cam_buf.index], gl_resources);
+
+        /* Draw rectangle on NV12 texture */
+        gl_draw_rectangle(gl_resources);
+
+        /* Reuse camera's buffer */
+        assert(v4l2_enqueue_buf(p_data->cam_fd, cam_buf.index));
+
+        /* If 'p_buf' contains data, 'nFilledLen' must not be zero */
+        p_buf->nFilledLen = NV12_FRAME_SIZE_IN_BYTES;
+
+        /* Section 6.14.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+        p_buf->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
+
+        if (g_int_signal)
+        {
+            p_buf->nFlags |= OMX_BUFFERFLAG_EOS;
+
+            /* Exit loop */
+            is_running = false;
+        }
+
+        /* Send the buffer to the input port of the component */
+        assert(OMX_EmptyThisBuffer(p_data->handle, p_buf) == OMX_ErrorNone);
+    }
+
+    /**************************************************************************
+     *                 STEP 6: CLEAN UP OPENGL ES'S RESOURCES                 *
+     **************************************************************************/
+
+    /* Delete framebuffers and NV12 textures */
+    gl_delete_framebuffers(p_nv12_fbs, NV12_BUFFER_COUNT);
+
+    gl_delete_textures(p_nv12_texs, NV12_BUFFER_COUNT);
+    egl_delete_images(display, p_nv12_imgs, NV12_BUFFER_COUNT);
+
+    /* Delete YUYV textures */
+    gl_delete_textures(p_yuyv_texs, YUYV_BUFFER_COUNT);
+    egl_delete_images(display, p_yuyv_imgs, YUYV_BUFFER_COUNT);
+
+    /* Delete resources for OpenGL ES */
+    gl_delete_resources(gl_resources);
+
+    /* Delete EGL display */
+    egl_delete_display(display);
+
+    printf("Thread '%s' exited\n", __FUNCTION__);
+    return NULL;
+}
+
+void * thread_output(void * p_param)
+{
+    out_data_t * p_data = (out_data_t *)p_param;
+
+    /* true:  The loop is running.
+     * false: The loop just stopped */
+    bool is_running = true;
+
+    /* Buffer of output port */
+    OMX_BUFFERHEADERTYPE * p_buf = NULL;
+
+    /* File for writing H.264 data */
+    FILE * p_h264_fd = NULL;
+
+    /* Check parameter */
+    assert(p_data != NULL);
+
+    /* Open file */
+    p_h264_fd = fopen(H264_FILE_NAME, "w");
+    assert(p_h264_fd != NULL);
+
+    while (is_running)
+    {
+        assert(pthread_mutex_lock(p_data->p_mutex) == 0);
+
+        while (queue_is_empty(p_data->p_queue))
+        {
+            /* The thread will sleep until the queue is not empty */
+            assert(0 == pthread_cond_wait(p_data->p_cond_available,
+                                          p_data->p_mutex));
+        }
+
+        /* At this point, the queue must have something in it */
+        assert(!queue_is_empty(p_data->p_queue));
+
+        /* Receive buffer from the queue */
+        p_buf = *(OMX_BUFFERHEADERTYPE **)(queue_dequeue(p_data->p_queue));
+        assert(p_buf != NULL);
+
+        assert(pthread_mutex_unlock(p_data->p_mutex) == 0);
+
+        /* Write H.264 data to a file */
+        fwrite((char *)(p_buf->pBuffer), 1, p_buf->nFilledLen, p_h264_fd);
+
+        if (p_buf->nFlags & OMX_BUFFERFLAG_EOS)
+        {
+            /* Exit loop */
+            is_running = false;
+        }
+        else
+        {
+            p_buf->nFilledLen = 0;
+            p_buf->nFlags     = 0;
+
+            /* Send the buffer to the output port of the component */
+            assert(OMX_FillThisBuffer(p_data->handle, p_buf) == OMX_ErrorNone);
+        }
+    }
+
+    /* Close file */
+    fclose(p_h264_fd);
+
+    printf("Thread '%s' exited\n", __FUNCTION__);
+    return NULL;
+}
+
 /****************************** FOR FILE ACCESS *******************************/
 
 char * file_read_str(const char * p_name)
@@ -3298,7 +3837,7 @@ void file_write_buffer(const char * p_name, const char * p_buffer, size_t size)
     if (p_fd != NULL)
     {
         /* Write content to the file */
-        fwrite(p_buffer, sizeof(char), size, p_fd);
+        fwrite(p_buffer, 1, size, p_fd);
 
         /* Close file */
         fclose(p_fd);
