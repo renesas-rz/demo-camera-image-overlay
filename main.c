@@ -1,6 +1,9 @@
 #include <math.h>
+#include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <signal.h>
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -39,52 +42,59 @@
 
 #include <linux/videodev2.h>
 
-/* For YUYV */
-#define YUYV_FRAME_WIDTH_IN_PIXELS  640
-#define YUYV_FRAME_HEIGHT_IN_PIXELS 480
+/******************************************************************************
+ *                              MACRO VARIABLES                               *
+ ******************************************************************************/
 
-#define YUYV_FRAME_WIDTH_IN_BYTES (YUYV_FRAME_WIDTH_IN_PIXELS * 2)
-#define YUYV_FRAME_SIZE_IN_BYTES  (YUYV_FRAME_WIDTH_IN_PIXELS  * \
-                                   YUYV_FRAME_HEIGHT_IN_PIXELS * 2)
+#define FRAME_WIDTH_IN_PIXELS  640
 
-/* For NV12 */
-#define NV12_FRAME_WIDTH_IN_PIXELS  YUYV_FRAME_WIDTH_IN_PIXELS
-#define NV12_FRAME_HEIGHT_IN_PIXELS YUYV_FRAME_HEIGHT_IN_PIXELS
+#define FRAME_HEIGHT_IN_PIXELS 480
 
-#define NV12_FRAME_SIZE_IN_BYTES (NV12_FRAME_WIDTH_IN_PIXELS  * \
-                                  NV12_FRAME_HEIGHT_IN_PIXELS * 1.5f)
+#define YUYV_FRAME_WIDTH_IN_BYTES (FRAME_WIDTH_IN_PIXELS * 2)
 
-/* For NV12 (plane 0) */
-#define NV12_PLANE0_WIDTH_IN_PIXELS  NV12_FRAME_WIDTH_IN_PIXELS
-#define NV12_PLANE0_HEIGHT_IN_PIXELS NV12_FRAME_HEIGHT_IN_PIXELS
+#define YUYV_FRAME_SIZE_IN_BYTES (FRAME_WIDTH_IN_PIXELS  * \
+                                  FRAME_HEIGHT_IN_PIXELS * 2)
 
-#define NV12_PLANE0_SIZE_IN_BYTES (NV12_PLANE0_WIDTH_IN_PIXELS  * \
-                                   NV12_PLANE0_HEIGHT_IN_PIXELS * 1)
+#define NV12_FRAME_SIZE_IN_BYTES (FRAME_WIDTH_IN_PIXELS  * \
+                                  FRAME_HEIGHT_IN_PIXELS * 1.5f)
 
-/* For NV12 (plane 1) */
-#define NV12_PLANE1_WIDTH_IN_PIXELS  (NV12_FRAME_WIDTH_IN_PIXELS  / 2)
-#define NV12_PLANE1_HEIGHT_IN_PIXELS (NV12_FRAME_HEIGHT_IN_PIXELS / 2)
+#define FRAMERATE 30 /* FPS */
 
-#define NV12_PLANE1_SIZE_IN_BYTES (NV12_PLANE1_WIDTH_IN_PIXELS  * \
-                                   NV12_PLANE1_HEIGHT_IN_PIXELS * 2)
+/********************************** FOR V4L2 **********************************/
 
-/* For V4L2 */
+/* The sample app is tested OK with:
+ *   - Logitech C270 HD Webcam.
+ *   - Logitech C920 HD Pro Webcam [1].
+ *   - Logitech C930e Business Webcam.
+ *   - Logitech BRIO Ultra HD Pro Business Webcam.
+ *
+ * [1] Need to run the app multiple times to get good buffer from the camera */
+#define USB_CAMERA_FD "/dev/video0"
 
-/* The sample app uses C270 HD Webcam */
-#define V4L2_USB_CAMERA    "/dev/video0"
-#define V4L2_REQUESTED_FPS 24
+/* The number of buffers to be allocated for the camera */
+#define YUYV_BUFFER_COUNT 5
 
-/* For OMX */
+/********************************** FOR OMX ***********************************/
 
 /* The component name for H.264 encoder media component */
 #define RENESAS_VIDEO_ENCODER_NAME "OMX.RENESAS.VIDEO.ENCODER.H264"
 
-/* The macro will be set to input port:
+/* The number of buffers to be allocated for input port of media component */
+#define NV12_BUFFER_COUNT 2
+
+/* The number of buffers to be allocated for output port of media component */
+#define H264_BUFFER_COUNT 2
+
+#define H264_BITRATE 1572864 /* 1.5 Mbit/s */
+
+#define H264_FILE_NAME "out-h264-640x480.264"
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nFrameWidth
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::nFrameWidth)
  *
- * According to OMX IL specification 1.1.2, 'nFrameWidth'
- * is the width of the data in pixels.
+ * According to OMX IL specification 1.1.2, 'nFrameWidth' is the width of
+ * the data in pixels.
  *
  * According to document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf',
  * if 'nFrameWidth' is an odd value, it will be rounded down to the closest
@@ -96,14 +106,14 @@
  *
  * Warning: Rules (*) and (**) are correct in decoding process, but
  * they are not confirmed in encoding process */
-#define OMX_INPUT_FRAME_WIDTH  NV12_FRAME_WIDTH_IN_PIXELS
 
-/* The macro will be set to input port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nFrameHeight
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::nFrameHeight)
  *
- * According to OMX IL specification 1.1.2, 'nFrameHeight'
- * is the height of the data in pixels.
+ * According to OMX IL specification 1.1.2, 'nFrameHeight' is the height of
+ * the data in pixels.
  *
  * According to document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf',
  * if 'nFrameHeight' is an odd value, it will be rounded down to the closest
@@ -114,26 +124,37 @@
  * calculates and adds the bottom crop information to the encoded stream (**).
  *
  * Warning: Rules (*) and (**) are not confirmed in encoding process */
-#define OMX_INPUT_FRAME_HEIGHT  NV12_FRAME_HEIGHT_IN_PIXELS
 
-/* The macro will be converted to Q16 format and then set to input port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::xFramerate
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::xFramerate)
  *
  * According to OMX IL specification 1.1.2, 'xFramerate' is the
- * frame rate whose unit is frames per second. The value is represented
+ * framerate whose unit is frames per second. The value is represented
  * in Q16 format and used on the port which handles uncompressed data.
  *
  * Note: For the list of supported 'xFramerate' values, please refer to
  * 'Table 6-5' in document 'R01USxxxxEJxxxx_h264e_v1.0.pdf' */
-#define OMX_INPUT_FRAME_RATE 24 /* FPS */
 
-/* The macro will be set to input port:
+
+/* Introduction to:
+ *   OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountActual
+ *
+ * According to OMX IL specification 1.1.2, 'nBufferCountActual' represents
+ * the number of buffers that are required on these ports before they are
+ * populated, as indicated by 'OMX_PARAM_PORTDEFINITIONTYPE::bPopulated'.
+ *
+ * The component shall set a default value no less than 'nBufferCountMin'
+ * for this field */
+
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nStride
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::nStride)
  *
- * Basically, 'nStride' is the sum of 'nFrameWidth' and extra padding
- * pixels at the end of each row of a frame.
+ * Basically, 'nStride' is the sum of 'nFrameWidth' and extra padding pixels
+ * at the end of each row of a frame.
  *
  * According to document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf':
  *   - If 'eColorFormat' is 'OMX_COLOR_FormatYUV420SemiPlanar', 'nStride'
@@ -158,16 +179,17 @@
  *      'eColorFormat' is 'OMX_COLOR_FormatYUV420SemiPlanar',
  *      'nStride' will be 1920 (even value and is a multiple of 32).
  *
- * Note: 'nStride' plays an important role in the layout of buffer data which
- * can be seen in 'Figure 6-6' of document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf'.
- *
- * TODO: The macro should be calculated based on 'nFrameWidth' and
- * 'eColorFormat' instead of constant value.
+ * Notes:
+ *  1. 'nStride' plays an important role in the layout of buffer data
+ *     (of the input port) which can be seen in 'Figure 6-6' of document
+ *     'R01USxxxxEJxxxx_vecmn_v1.0.pdf'.
+ *  2. The sample app uses macro function 'OMX_STRIDE' to calculate 'nStride'
+ *     from 'nFrameWidth'.
  *
  * Warning: Rule (*) is not confirmed in encoding process */
-#define OMX_INPUT_STRIDE  OMX_INPUT_FRAME_WIDTH /* pixels per row */
 
-/* The macro will be set to input port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nSliceHeight
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::nSliceHeight)
  *
@@ -184,9 +206,12 @@
  *   1. If 'nFrameHeight' is 480, 'nSliceHeight' will be 480 (even value).
  *   2. If 'nFrameHeight' is 1080, 'nSliceHeight' will be 1080 (even value).
  *
- * Note: 'nSliceHeight' plays an important role in the layout of buffer data
- * (of the input port) which can be seen in 'Figure 6-6' of document
- * 'R01USxxxxEJxxxx_vecmn_v1.0.pdf'.
+ * Notes:
+ *   1. 'nSliceHeight' plays an important role in the layout of buffer data
+ *      (of the input port) which can be seen in 'Figure 6-6' of document
+ *      'R01USxxxxEJxxxx_vecmn_v1.0.pdf'.
+ *   2. The sample app uses macro function 'OMX_SLICE_HEIGHT' to calculate
+ *      'nSliceHeight' from 'nFrameHeight'.
  *
  * Basically, 'nSliceHeight' and 'nStride' are used to calculate start address
  * of plane 1 (UV plane) of NV12 (as below):
@@ -212,13 +237,10 @@
  *        NV12. Unlike plane 0, it does not need to be divisible by the page
  *        size in encoding process.
  *
- * TODO: The macro should be calculated based on 'nFrameHeight' instead of
- * constant value.
- *
  * Warning: Rule (*) is not confirmed in encoding process */
-#define OMX_INPUT_SLICE_HEIGHT  OMX_INPUT_FRAME_HEIGHT /* pixels per column */
 
-/* The macro will be set to input port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::eColorFormat
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::eColorFormat)
  *
@@ -227,38 +249,64 @@
  *
  * Note: On G2L, 'eColorFormat' will always be
  * 'OMX_COLOR_FormatYUV420SemiPlanar' which represents NV12 format */
-#define OMX_INPUT_COLOR_FORMAT  OMX_COLOR_FormatYUV420SemiPlanar
 
-/* The macro will be set to output port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::nBitrate
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::nBitrate)
  *
- * According to OMX IL specification 1.1.2, 'nBitrate' is the bit rate in bits
+ * According to OMX IL specification 1.1.2, 'nBitrate' is the bitrate in bits
  * per second of the frame to be used on the port which handles compressed
  * data */
-#define OMX_OUTPUT_BIT_RATE 1572864 /* 1.5 Mbit/s */
 
-/* The macro will be set to output port:
+
+/* Introduction to:
  *   OMX_PARAM_PORTDEFINITIONTYPE::format::video::eCompressionFormat
  *   (OMX_VIDEO_PORTDEFINITIONTYPE::eCompressionFormat)
  *
  * According to document 'R01USxxxxEJxxxx_h264e_v1.0.pdf',
  * 'eCompressionFormat' only accepts value 'OMX_VIDEO_CodingAVC' */
-#define OMX_OUTPUT_COMPRESSION_FORMAT  OMX_VIDEO_CodingAVC
 
-#define OMX_INIT_STRUCTURE(p_struct)                                \
+/******************************************************************************
+ *                              FUNCTION MACROS                               *
+ ******************************************************************************/
+
+/* Return a value not less than 'VAL' and divisible by 'RND'
+ * (based on: https://github.com/Xilinx/vcu-omx-il/blob/master/exe_omx/encoder).
+ *
+ * Examples:
+ *   - ROUND_UP(359, 2) -> 360.
+ *   - ROUND_UP(480, 2) -> 480.
+ *
+ *   - ROUND_UP(360, 32)  ->  384.
+ *   - ROUND_UP(640, 32)  ->  640.
+ *   - ROUND_UP(720, 32)  ->  736.
+ *   - ROUND_UP(1280, 32) -> 1280.
+ *   - ROUND_UP(1920, 32) -> 1920 */
+#define ROUND_UP(VAL, RND) (((VAL) + (RND) - 1) & (~((RND) - 1)))
+
+#define OMX_INIT_STRUCTURE(P_STRUCT)                                \
 {                                                                   \
-    memset((p_struct), 0, sizeof(*(p_struct)));                     \
+    memset((P_STRUCT), 0, sizeof(*(P_STRUCT)));                     \
                                                                     \
-    (p_struct)->nSize = sizeof(*(p_struct));                        \
+    (P_STRUCT)->nSize = sizeof(*(P_STRUCT));                        \
                                                                     \
-    (p_struct)->nVersion.s.nVersionMajor = OMX_VERSION_MAJOR;       \
-    (p_struct)->nVersion.s.nVersionMinor = OMX_VERSION_MINOR;       \
-    (p_struct)->nVersion.s.nRevision     = OMX_VERSION_REVISION;    \
-    (p_struct)->nVersion.s.nStep         = OMX_VERSION_STEP;        \
+    (P_STRUCT)->nVersion.s.nVersionMajor = OMX_VERSION_MAJOR;       \
+    (P_STRUCT)->nVersion.s.nVersionMinor = OMX_VERSION_MINOR;       \
+    (P_STRUCT)->nVersion.s.nRevision     = OMX_VERSION_REVISION;    \
+    (P_STRUCT)->nVersion.s.nStep         = OMX_VERSION_STEP;        \
 }
 
-/* For EGL and OpenGL ES */
+/* Get stride from frame width */
+#define OMX_STRIDE(WIDTH) ROUND_UP(WIDTH, 32)
+
+/* Get slice height from frame height */
+#define OMX_SLICE_HEIGHT(HEIGHT) ROUND_UP(HEIGHT, 2)
+
+/******************************************************************************
+ *                        EGL AND OPENGL ES EXTENSIONS                        *
+ ******************************************************************************/
+
 typedef EGLImageKHR (*EGLCREATEIMAGEKHR) (EGLDisplay dpy, EGLContext ctx,
                                           EGLenum target,
                                           EGLClientBuffer buffer,
@@ -269,47 +317,74 @@ typedef EGLBoolean (*EGLDESTROYIMAGEKHR) (EGLDisplay dpy, EGLImageKHR image);
 typedef void (*GLEGLIMAGETARGETTEXTURE2DOES) (GLenum target,
                                               GLeglImageOES image);
 
-/* For sharing data between threads and callbacks related to OMX */
+EGLCREATEIMAGEKHR eglCreateImageKHR;
+EGLDESTROYIMAGEKHR eglDestroyImageKHR;
+GLEGLIMAGETARGETTEXTURE2DOES glEGLImageTargetTexture2DOES;
+
+/******************************************************************************
+ *                           STRUCTURE DEFINITIONS                            *
+ ******************************************************************************/
+
+/********************************** FOR V4L2 **********************************/
+
+/* This structure is used by V4L2 (dmabuf export mode) */
 typedef struct
 {
-    /* The semaphore structures are used to confirm the completion of
-     * state transition and the completion of reception of H.264 data */
-    sem_t sem_event_idle;       /* The component is in state IDLE */
-    sem_t sem_event_exec;       /* The component is in state EXECUTING */
-    sem_t sem_h264_hdr_done;    /* The SPS NAL and PPS NAL are received */
-    sem_t sem_h264_data_done;   /* The Data NAL is received */
+    /* File descriptor of dmabuf */
+    int dmabuf_fd;
 
-    /* The handle is used to access all the public methods of media
-     * component */
-    OMX_HANDLETYPE video_enc_handle;
+    /* Buffer in the virtual address space of this process */
+    char * p_virt_addr;
 
-    /* The structures contain a set of generic fields that characterize each
-     * port of the media component */
-    OMX_PARAM_PORTDEFINITIONTYPE in_port;  /* Input port */
-    OMX_PARAM_PORTDEFINITIONTYPE out_port; /* Output port */
+    /* Buffer's size */
+    size_t size;
 
-    /* A buffer for input port.
-     *
-     * TODO: Need to allocate an array of buffers based on
-     * 'OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountActual' */
-    OMX_BUFFERHEADERTYPE * p_in_buf;
+} v4l2_dmabuf_exp_t;
 
-    /* Buffers for output port.
-     *
-     * Note: Size of 'pp_out_bufs' is defined in
-     * 'OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountActual' */
-    OMX_BUFFERHEADERTYPE ** pp_out_bufs;
+/******************************* FOR OPENGL ES ********************************/
 
-    /* File descriptor for storing H.264 data */
-    FILE * p_h264_fd;
+typedef struct
+{
+    /* For drawing rectangle */
+    GLuint shape_prog;
+    GLuint vbo_rec_vertices;
+    GLuint ibo_rec_indices;
 
-} shared_data_t;
+    /* For YUYV-to-NV12 conversion */
+    GLuint conv_prog;
+    GLuint vbo_canvas_vertices;
+    GLuint ibo_canvas_indices;
+    GLint uniform_yuyv_texture;
 
-/* For dummy buffers of input port */
+} gl_resources_t;
+
+/********************************* FOR MMNGR **********************************/
+
+/* For dmabuf exported by mmngr */
+typedef struct
+{
+    /* Export ID */
+    int dmabuf_id;
+
+    /* File descriptor of dmabuf */
+    int dmabuf_fd;
+
+    /* Buffer in the virtual address space of this process */
+    char * p_virt_addr;
+
+    /* Buffer's size */
+    size_t size;
+
+} mmngr_dmabuf_exp_t;
+
+/* For buffers of input port */
 typedef struct
 {
     /* ID of allocated memory */
     MMNGR_ID mmngr_id;
+
+    /* Buffer's size */
+    size_t size;
 
     /* Physical address whose 12-bit address is shifted to the right */
     unsigned long phy_addr;
@@ -318,45 +393,170 @@ typedef struct
     unsigned long hard_addr;
 
     /* Address for CPU of allocated memory */
-    unsigned long user_virt_addr;
+    unsigned long virt_addr;
+
+    /* Array of dmabufs.
+     * Note: Might be NULL if mmngr does not export dmabufs */
+    mmngr_dmabuf_exp_t * p_dmabufs;
+
+    /* The number of elements in 'p_dmabufs' array.
+     * Note: Might be 0 if mmngr does not export dmabufs */
+    uint32_t count;
 
 } mmngr_buf_t;
 
-/* Function declarations */
+/****************************** FOR APPLICATION *******************************/
 
-/* Get smallest integral value not less than 'size' and
- * is a multiple of page size (4096 bytes).
- */
-size_t page_size_get_aligned_size(size_t size);
+/* For threads and OMX's callbacks */
+typedef struct
+{
+    /* USB camera */
+    int cam_fd;
 
-/* Check if 'size' is aligned to page size or not?
- */
-bool page_size_is_size_aligned(size_t size);
+    /* YUYV buffers */
+    uint32_t yuyv_buf_cnt;
 
-/*
- * Read file's contents.
- * Note: The content must be freed when no longer used.
- */
-char * file_read_str(const char * p_filename);
+    v4l2_dmabuf_exp_t * p_yuyv_bufs;
+    EGLImageKHR       * p_yuyv_imgs;
+    GLuint            * p_yuyv_texs;
 
-/*
- * Write data to a file.
- * Note: The data is not freed by this function.
- */
-void file_write_buffer(const char * p_filename,
-                       const char * p_buffer, size_t size);
+    /* NV12 buffers */
+    uint32_t nv12_buf_cnt;
 
-/*
- * Compile the shader from file 'p_filename', with error handling.
- */
-GLuint shader_create(const char * p_filename, GLenum type);
+    mmngr_buf_t * p_nv12_bufs;
+    EGLImageKHR * p_nv12_imgs;
+    GLuint      * p_nv12_texs;
 
-/*
- * Create program from 2 existing vertex shader object and
- * fragment shader object.
- */
-GLuint program_create(GLuint vertex_shader_object,
-                      GLuint fragment_shader_object);
+    /* Framebuffers */
+    GLuint * p_nv12_fbs;
+
+    /* EGL display connection */
+    EGLDisplay display;
+
+    /* Resources for OpenGL ES */
+    gl_resources_t gl_resources;
+
+    /* Handle of media component */
+    OMX_HANDLETYPE handle;
+
+    /* File descriptor for storing H.264 data */
+    FILE * p_h264_fd;
+
+    /* Buffers for input and output ports */
+    OMX_BUFFERHEADERTYPE ** pp_in_bufs;
+    OMX_BUFFERHEADERTYPE ** pp_out_bufs;
+
+    /* The semaphore structures are used to confirm the completion of
+     * transmission of NV12 data and reception of H.264 data */
+    sem_t sem_nv12_done;
+    sem_t sem_h264_done;
+
+} app_t;
+
+/******************************************************************************
+ *                              GLOBAL VARIABLES                              *
+ ******************************************************************************/
+
+/* 1: Interrupt signal */
+volatile sig_atomic_t g_int_signal = 0;
+
+/******************************************************************************
+ *                           FUNCTION DECLARATIONS                            *
+ ******************************************************************************/
+
+/**************************** FOR SIGNAL HANDLING *****************************/
+
+void sigint_handler(int signum, siginfo_t * p_info, void * ptr);
+
+/********************************** FOR V4L2 **********************************/
+
+/* This function opens V4L2 device.
+ * Return non-negative value if successful or -1 if error */
+int v4l2_open_dev(const char * p_name);
+
+/* This function checks the below conditions:
+ *   - The device should support the single-planar API through the
+ *     Video Capture interface.
+ *   - The device should support the streaming I/O method.
+ *
+ * Return true if the above conditions are true. Otherwise, return false */
+bool v4l2_verify_dev(int dev_fd);
+
+/* Print capabilities of V4L2 device */
+void v4l2_print_caps(int dev_fd);
+
+/* This function converts integer value 'fourcc' to string.
+ * Return 'str' (useful when passing the function to 'printf').
+ *
+ * Note 1: 'fourcc' is created from macro 'v4l2_fourcc' or 'v4l2_fourcc_be':
+ * https://github.com/torvalds/linux/blob/master/include/uapi/linux/videodev2.h
+ *
+ * Note 2: The code is based on function 'std::string fcc2s(__u32 val)':
+ * https://git.linuxtv.org/v4l-utils.git/tree/utils/common/v4l2-info.cpp */
+char * v4l2_fourcc_to_str(uint32_t fourcc, char str[8]);
+
+/* Print current format of V4L2 device */
+void v4l2_print_format(int dev_fd);
+
+/* Print current framerate of V4L2 device */
+void v4l2_print_framerate(int dev_fd);
+
+/* This function gets format for V4L2 device */
+bool v4l2_get_format(int dev_fd, struct v4l2_format * p_fmt);
+
+/* This function gets streaming parameters for V4L2 device */
+bool v4l2_get_stream_params(int dev_fd, struct v4l2_streamparm * p_params);
+
+/* This function sets format for V4L2 device.
+ * Return true if the requested format is set successfully */
+bool v4l2_set_format(int dev_fd,
+                     uint32_t img_width, uint32_t img_height,
+                     uint32_t pix_fmt, enum v4l2_field field);
+
+/* This function sets framerate for V4L2 device.
+ * Return true if the requested framerate is set successfully */
+bool v4l2_set_framerate(int dev_fd, uint32_t framerate);
+
+/* Export dmabuf from V4L2 device */
+bool v4l2_export_dmabuf(int dev_fd, uint32_t index, v4l2_dmabuf_exp_t * p_buf);
+
+/* Allocate dmabufs for V4L2 device.
+ *
+ * The function returns an array of allocated dmabufs and
+ * updates 'p_count' if length of the array is smaller than 'p_count'.
+ *
+ * If error, it will return NULL.
+ * Note: The array must be freed when no longer used */
+v4l2_dmabuf_exp_t * v4l2_alloc_dmabufs(int dev_fd, uint32_t * p_count);
+
+/* Free dmabufs (allocated by 'v4l2_alloc_dmabufs') */
+void v4l2_dealloc_dmabufs(v4l2_dmabuf_exp_t * p_bufs, uint32_t count);
+
+/* This function enqueues a buffer with sequence number 'index' to V4L2 device.
+ * The value 'index' ranges from zero to the number of buffers allocated with
+ * the ioctl 'VIDIOC_REQBUFS' (struct 'v4l2_requestbuffers::count') minus one.
+ *
+ * Return true if the buffer is enqueued successfully */
+bool v4l2_enqueue_buf(int dev_fd, uint32_t index);
+
+/* This function enqueues buffers to V4L2 device.
+ *
+ * Return true if all buffers are enqueued successfully.
+ * Otherwise, return false */
+bool v4l2_enqueue_bufs(int dev_fd, uint32_t count);
+
+/* This function dequeues a buffer from V4L2 device.
+ * Return true and update structure 'v4l2_buffer' pointed by 'p_buf' if
+ * successful */
+bool v4l2_dequeue_buf(int dev_fd, struct v4l2_buffer * p_buf);
+
+/* This function enables capturing process on V4L2 device */
+bool v4l2_enable_capturing(int dev_fd);
+
+/* This function disables capturing process on V4L2 device */
+bool v4l2_disable_capturing(int dev_fd);
+
+/********************************** FOR OMX ***********************************/
 
 /* The method is used to notify the application when an event of interest
  * occurs within the component.
@@ -368,8 +568,7 @@ GLuint program_create(GLuint vertex_shader_object,
  * Callbacks should not return an error to the component, so if an error
  * occurs, the application shall handle it internally.
  *
- * Note: This is a blocking call.
- */
+ * Note: This is a blocking call */
 OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
                                 OMX_EVENTTYPE eEvent, OMX_U32 nData1,
                                 OMX_U32 nData2, OMX_PTR pEventData);
@@ -382,9 +581,9 @@ OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
  * another thread.
  *
  * Callbacks should not return an error to the component, so the application
- * shall handle any errors generated internally.
- */
-OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
+ * shall handle any errors generated internally */
+OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
+                                    OMX_PTR pAppData,
                                     OMX_BUFFERHEADERTYPE* pBuffer);
 
 /* The method is used to return filled buffers from an output port back to
@@ -395,44 +594,347 @@ OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
  * another thread.
  *
  * Callbacks should not return an error to the component, so the application
- * shall handle any errors generated internally.
- */
-OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
+ * shall handle any errors generated internally */
+OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent,
+                                   OMX_PTR pAppData,
                                    OMX_BUFFERHEADERTYPE* pBuffer);
 
-/* This method blocks calling thread until the component is in state 'state' */
-OMX_BOOL omx_wait_state(OMX_HANDLETYPE handle, OMX_STATETYPE state);
+/* This method blocks calling thread until the component is in state 'state'
+ * (based on section 3.2.2.13.2 in OMX IL specification 1.1.2) */
+void omx_wait_state(OMX_HANDLETYPE handle, OMX_STATETYPE state);
+
+/* Convert 'OMX_STATETYPE' to string.
+ * Note: The string must be freed when no longer used */
+char * omx_state_to_str(OMX_STATETYPE state);
+
+/* Print media component's role */
+void omx_print_mc_role(OMX_HANDLETYPE handle);
+
+/* Get port's structure 'OMX_PARAM_PORTDEFINITIONTYPE'.
+ * Note: 'port_idx' should be 0 (input port) or 1 (output port) */
+bool omx_get_port(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                  OMX_PARAM_PORTDEFINITIONTYPE * p_port);
+
+/* Get video encode bitrate control for port at 'port_idx' */
+bool omx_get_bitrate_ctrl(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                          OMX_VIDEO_PARAM_BITRATETYPE * p_ctrl);
+
+/* Set raw format to input port's structure 'OMX_PARAM_PORTDEFINITIONTYPE' */
+bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
+                         OMX_U32 frame_width, OMX_U32 frame_height,
+                         OMX_COLOR_FORMATTYPE color_fmt, OMX_U32 framerate);
+
+/* Set H.264 format and bitrate to output port's structure
+ * 'OMX_PARAM_PORTDEFINITIONTYPE' */
+bool omx_set_out_port_fmt(OMX_HANDLETYPE handle, OMX_U32 bitrate,
+                          OMX_VIDEO_CODINGTYPE compression_fmt);
+
+/* Set 'buf_cnt' buffers to port 'port_idx' */
+bool omx_set_port_buf_cnt(OMX_HANDLETYPE handle,
+                          OMX_U32 port_idx, OMX_U32 buf_cnt);
+
+/* Use buffers in 'p_bufs' to allocate buffer headers for port at 'port_idx'.
+ * Note: 'p_bufs[index].size' must be equal to 'nBufferSize' of port */
+OMX_BUFFERHEADERTYPE ** omx_use_buffers(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                                        mmngr_buf_t * p_bufs, uint32_t count);
+
+/* Allocate buffers and buffer headers for port at 'port_idx' */
+OMX_BUFFERHEADERTYPE ** omx_alloc_buffers(OMX_HANDLETYPE handle,
+                                          OMX_U32 port_idx);
+
+/* Free 'count' elements in 'pp_bufs' */
+void omx_dealloc_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                           OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count);
+
+/* Free 'nBufferCountActual' elements in 'pp_bufs'.
+ * Note: Make sure the length of 'pp_bufs' is equal to 'nBufferCountActual' */
+void omx_dealloc_all_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                               OMX_BUFFERHEADERTYPE ** pp_bufs);
+
+/********************************** FOR EGL ***********************************/
+
+/* This function obtains EGL display connection.
+ * Return a value other than 'EGL_NO_DISPLAY' if successful */
+EGLDisplay egl_create_display();
+
+/* Release current context and terminate EGL display connection */
+void egl_delete_display(EGLDisplay display);
+
+/* Check if 'p_name' is a supported extension to EGL */
+bool egl_is_ext_supported(EGLDisplay display, const char * p_name);
+
+/* Initialize EGL extension functions.
+ * Return true if all functions are supported at runtime */
+bool egl_init_ext_funcs(EGLDisplay display);
+
+/* Create YUYV EGLImage from a dmabuf file descriptor.
+ * Return a value other than 'EGL_NO_IMAGE_KHR' if successful */
+EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
+                                  uint32_t img_height, int dmabuf_fd);
+
+/* Create YUYV EGLImage objects from an array of 'v4l2_dmabuf_exp_t' structs.
+ * Return an array of EGLImage objects with the number of elements 'cnt' */
+EGLImageKHR * egl_create_yuyv_images(EGLDisplay display,
+                                     uint32_t img_width, uint32_t img_height,
+                                     v4l2_dmabuf_exp_t * p_bufs, uint32_t cnt);
+
+/* Create NV12 EGLImage from dmabuf file descriptors.
+ * Return a value other than 'EGL_NO_IMAGE_KHR' if successful */
+EGLImageKHR egl_create_nv12_image(EGLDisplay display,
+                                  uint32_t img_width, uint32_t img_height,
+                                  int y_dmabuf_fd, int uv_dmabuf_fd);
+
+/* Create NV12 EGLImage objects from an array of 'mmngr_buf_t' structs.
+ * Return an array of EGLImage objects with the number of elements 'count' */
+EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
+                                     uint32_t img_width, uint32_t img_height,
+                                     mmngr_buf_t * p_bufs, uint32_t count);
+
+/* Delete an array of EGLImage objects.
+ * Note: This function will deallocate array 'p_imgs' */
+void egl_delete_images(EGLDisplay display,
+                       EGLImageKHR * p_imgs, uint32_t count);
+
+/******************************* FOR OPENGL ES ********************************/
+
+/* Compile the shader from file 'p_file' */
+GLuint gl_create_shader(const char * p_file, GLenum type);
+
+/* Create program from 2 existing vertex shader and fragment shader objects */
+GLuint gl_create_prog_from_objs(GLuint vs_object, GLuint fs_object);
+
+/* Create program from file 'p_vs_file' and file 'p_fs_file' */
+GLuint gl_create_prog_from_src(const char * p_vs_file, const char * p_fs_file);
+
+/* Check if extension string 'p_name' is supported by the implementation */
+bool gl_is_ext_supported(const char * p_name);
+
+/* Initialize OpenGL ES extension functions.
+ * Return true if all functions are supported at runtime */
+bool gl_init_ext_funcs();
+
+/* Create texture from EGLImage.
+ * Return texture's ID (other than 0) if successful.
+ *
+ * Note: The texture is unbound after calling this function.
+ *       Please make sure to bind it when you render it ('glDrawElements')
+ *       or adjust its parameters ('glTexParameteri') */
+GLuint gl_create_texture(EGLImageKHR image);
+
+/* Create textures from an array of EGLImage objects.
+ * Return an array of textures with the number of elements 'count' */
+GLuint * gl_create_textures(EGLImageKHR * p_images, uint32_t count);
+
+/* Delete textures.
+ * Note: This function will deallocate array 'p_textures' */
+void gl_delete_textures(GLuint * p_textures, uint32_t count);
+
+/* Create framebuffer from texture.
+ * Return a value other than 0 if successful */
+GLuint gl_create_framebuffer(GLuint texture);
+
+/* Create framebuffers from an array of textures.
+ * Return an array of framebuffers with the number of elements 'count' */
+GLuint * gl_create_framebuffers(GLuint * p_textures, uint32_t count);
+
+/* Delete framebuffers.
+ * Note: This function will deallocate array 'p_fbs' */
+void gl_delete_framebuffers(GLuint * p_fbs, uint32_t count);
+
+/* Create resources for OpenGL ES */
+gl_resources_t gl_create_resources();
+
+/* Delete resources for OpenGL ES */
+void gl_delete_resources(gl_resources_t res);
+
+/* Draw rectangle */
+void gl_draw_rectangle(gl_resources_t res);
+
+/* Convert YUYV texture to NV12 texture */
+void gl_conv_yuyv_to_nv12(GLuint yuyv_texture, gl_resources_t res);
+
+/********************************* FOR MMNGR **********************************/
+
+/* Allocate NV12 buffers and export dmabufs.
+ * Return an array of 'mmngr_buf_t' structs.
+ *
+ * Note: The array must be freed when no longer used */
+mmngr_buf_t * mmngr_alloc_nv12_dmabufs(uint32_t count, size_t nv12_size);
+
+/* Deallocate dmabufs (allocated by 'mmngr_alloc_nv12_dmabufs') */
+void mmngr_dealloc_nv12_dmabufs(mmngr_buf_t * p_bufs, uint32_t count);
+
+/****************************** FOR FILE ACCESS *******************************/
+
+/* Read file's contents.
+ * Note: The content must be freed when no longer used */
+char * file_read_str(const char * p_name);
+
+/* Write data to a file.
+ * Note: The data is not freed by this function */
+void file_write_buffer(const char * p_name, const char * p_buffer, size_t size);
+
+/***************************** FOR PAGE ALIGNMENT *****************************/
+
+/* Get smallest integral value not less than 'size' and is a multiple of
+ * page size (4096 bytes) */
+size_t page_size_get_aligned_size(size_t size);
+
+/* Check if 'size' is aligned to page size or not? */
+bool page_size_is_size_aligned(size_t size);
+
+/***************************** FOR STRING SEARCH ******************************/
+
+/* This function converts 'p_str' to upper case.
+ * Return 'p_str' (useful when passing the function to another function) */
+char * str_to_uppercase(char * p_str);
+
+/* Find 'p_str' in 'p_str_arr' separated by 'p_delim_str'.
+ *
+ * For example:
+ *   1. str_find_whole_str("Hello World, Friends", ", ", "Friends")
+ *      -> Extract words: 'Hello', 'World', and 'Friends' from colons
+ *         and spaces. Then, return true because 'Friends' matches.
+ *
+ *   2. str_find_whole_str("Hello World, Friends", ", ", "Friend")
+ *      -> Extract words: 'Hello', 'World', and 'Friends' from colons
+ *         and spaces. Then, return false because 'Friend' does not match.
+ *
+ * Note: The function is not case sensitive */
+bool str_find_whole_str(const char * p_str_arr,
+                        const char * p_delim_str, const char * p_str);
+
+/****************************** FOR ERROR OUTPUT ******************************/
+
+/* Print error based on 'errno' */
+void errno_print();
+
+/******************************************************************************
+ *                               MAIN FUNCTION                                *
+ ******************************************************************************/
 
 int main(int argc, char ** pp_argv)
 {
-    /***************************
-     * Step 1: Open USB camera *
-     ***************************/
+    /* true:  The main loop is running.
+     * false: The main loop just stopped */
+    bool is_running = true;
 
-    int usb_cam_fd = -1;
-    struct stat usb_cam_st;
+    /* true: The main loop runs for the first time */
+    bool is_first_run = true;
 
-    struct v4l2_buffer usb_cam_buf;
-    struct v4l2_format usb_cam_fmt;
-    struct v4l2_capability usb_cam_caps;
-    struct v4l2_exportbuffer usb_cam_expbuf;
-    struct v4l2_streamparm usb_cam_streamparm;
-    struct v4l2_requestbuffers usb_cam_reqbufs;
+    /* Interrupt signal */
+    struct sigaction sig_act;
 
-    enum v4l2_buf_type usb_cam_buf_type;
+    /* Shared data between threads and OMX's callbacks */
+    app_t app;
 
-    struct v4l2_fract * p_usb_cam_fract = NULL;
+    /* Variables used by V4L2 */
+    uint32_t index = 0;
 
-    char * p_yuyv_user_virt_addr = NULL;
-    int yuyv_dmabuf_fd = -1;
+    struct v4l2_format cam_fmt;
+    struct v4l2_buffer cam_buf;
 
-    /* Exit program if size of YUYV frame is not aligned to page size
+    /* Callbacks used by media component */
+    OMX_CALLBACKTYPE callbacks =
+    {
+        .EventHandler    = omx_event_handler,
+        .EmptyBufferDone = omx_empty_buffer_done,
+        .FillBufferDone  = omx_fill_buffer_done
+    };
+
+    /* Input port of media component */
+    OMX_PARAM_PORTDEFINITIONTYPE in_port;
+
+    /**************************************************************************
+     *                STEP 1: SET UP INTERRUPT SIGNAL HANDLER                 *
+     **************************************************************************/
+
+    sig_act.sa_sigaction = sigint_handler;
+    sig_act.sa_flags     = SA_SIGINFO | SA_RESTART;
+
+    sigaction(SIGINT,  &sig_act, NULL);
+    sigaction(SIGTERM, &sig_act, NULL);
+    sigaction(SIGQUIT, &sig_act, NULL);
+
+    /**************************************************************************
+     *                          STEP 2: SET UP V4L2                           *
+     **************************************************************************/
+
+    /* Open the camera */
+    app.cam_fd = v4l2_open_dev(USB_CAMERA_FD);
+    assert(app.cam_fd != -1);
+
+    /* Verify the camera */
+    assert(v4l2_verify_dev(app.cam_fd));
+
+    /* Print information of the camera */
+    v4l2_print_caps(app.cam_fd);
+
+    /* Set format for the camera */
+    assert(v4l2_set_format(app.cam_fd,
+                           FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
+                           V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE));
+
+    /* Confirm the new format */
+    assert(v4l2_get_format(app.cam_fd, &cam_fmt));
+    assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH_IN_BYTES);
+    assert(cam_fmt.fmt.pix.sizeimage    == YUYV_FRAME_SIZE_IN_BYTES);
+    assert(cam_fmt.fmt.pix.pixelformat  == V4L2_PIX_FMT_YUYV);
+    assert(cam_fmt.fmt.pix.field        == V4L2_FIELD_NONE);
+
+    /* Set framerate for the camera */
+    assert(v4l2_set_framerate(app.cam_fd, FRAMERATE));
+
+    /* Print format of the camera to console */
+    v4l2_print_format(app.cam_fd);
+
+    /* Print framerate of the camera to console */
+    v4l2_print_framerate(app.cam_fd);
+
+    /**************************************************************************
+     *                STEP 3: ALLOCATE YUYV BUFFERS FROM V4L2                 *
+     **************************************************************************/
+
+    /* Allocate buffers for the camera */
+    app.yuyv_buf_cnt = YUYV_BUFFER_COUNT;
+
+    app.p_yuyv_bufs = v4l2_alloc_dmabufs(app.cam_fd, &(app.yuyv_buf_cnt));
+    assert(app.yuyv_buf_cnt == YUYV_BUFFER_COUNT);
+
+    for (index = 0; index < app.yuyv_buf_cnt; index++)
+    {
+        assert(app.p_yuyv_bufs[index].size == YUYV_FRAME_SIZE_IN_BYTES);
+    }
+
+    /**************************************************************************
+     *                    STEP 4: SET UP EGL AND OPENGL ES                    *
+     **************************************************************************/
+
+    /* Create EGL display */
+    app.display = egl_create_display();
+    assert(app.display != EGL_NO_DISPLAY);
+
+    /* Initialize OpenGL ES and EGL extension functions */
+    assert(gl_init_ext_funcs());
+    assert(egl_init_ext_funcs(app.display));
+
+    /* Create resources needed for rendering */
+    app.gl_resources = gl_create_resources();
+
+    /* Make sure Viewport matches the width and height of YUYV buffer */
+    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+
+    /**************************************************************************
+     *               STEP 5: CREATE TEXTURES FROM YUYV BUFFERS                *
+     **************************************************************************/
+
+    /* Exit program if size of YUYV buffer is not aligned to page size.
      *
      * Mali library requires that both address and size of dmabuf must be
      * multiples of page size.
      *
-     * If a frame is in NV12 format (size: 640x480), then plane 1 (UV plane)
-     * will be 153,600 bytes.
+     * With dimension 640x480, size of plane 1 (UV plane) of NV12 buffer
+     * is 153,600 bytes.
      * Since this size is not a multiple of page size, the Mali library will
      * output the following messages when dmabuf of plane 1 is imported to it:
      *
@@ -442,226 +944,1351 @@ int main(int argc, char ** pp_argv)
      *  ... */
     assert(page_size_is_size_aligned(YUYV_FRAME_SIZE_IN_BYTES));
 
-    /* Check if 'V4L2_USB_CAMERA' exists or not? */
-    assert(stat(V4L2_USB_CAMERA, &usb_cam_st) == 0);
+    /* Create YUYV EGLImage objects */
+    app.p_yuyv_imgs = egl_create_yuyv_images(app.display,
+                                             FRAME_WIDTH_IN_PIXELS,
+                                             FRAME_HEIGHT_IN_PIXELS,
+                                             app.p_yuyv_bufs,
+                                             app.yuyv_buf_cnt);
+    assert(app.p_yuyv_imgs != NULL);
 
-    /* Check if 'V4L2_USB_CAMERA' is a special character file or not?
-     * The statement is useful if 'V4L2_USB_CAMERA' is provided by user */
-    assert(S_ISCHR(usb_cam_st.st_mode));
+    /* Create YUYV textures */
+    app.p_yuyv_texs = gl_create_textures(app.p_yuyv_imgs, app.yuyv_buf_cnt);
+    assert(app.p_yuyv_texs != NULL);
 
-    /* Try to open 'V4L2_USB_CAMERA' */
-    usb_cam_fd = open(V4L2_USB_CAMERA, O_RDWR);
-    assert(usb_cam_fd != -1);
+    /**************************************************************************
+     *                         STEP 6: SET UP OMX IL                          *
+     **************************************************************************/
 
-    /*********************************
-     * Step 2: Verify the USB camera *
-     *********************************/
+    /* Initialize OMX IL core */
+    assert(OMX_Init() == OMX_ErrorNone);
 
-    /* Discover capabilities of 'V4L2_USB_CAMERA'.
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-querycap.html */
-    assert(ioctl(usb_cam_fd, VIDIOC_QUERYCAP, &usb_cam_caps) == 0);
+    /* Locate Renesas's H.264 encoder.
+     * If successful, the component will be in state LOADED */
+    assert(OMX_ErrorNone == OMX_GetHandle(&(app.handle),
+                                          RENESAS_VIDEO_ENCODER_NAME,
+                                          (OMX_PTR)&app, &callbacks));
 
-    /* Make sure the USB camera supports the single-planar API through the
+    /* Print role of the component to console */
+    omx_print_mc_role(app.handle);
+
+    /* Configure input port */
+    assert(omx_set_in_port_fmt(app.handle,
+                               FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
+                               OMX_COLOR_FormatYUV420SemiPlanar, FRAMERATE));
+
+    assert(omx_set_port_buf_cnt(app.handle, 0, NV12_BUFFER_COUNT));
+
+    /* Configure output port */
+    assert(omx_set_out_port_fmt(app.handle, H264_BITRATE, OMX_VIDEO_CodingAVC));
+
+    assert(omx_set_port_buf_cnt(app.handle, 1, H264_BUFFER_COUNT));
+
+    /**************************************************************************
+     *               STEP 7: USE MMNGR TO ALLOCATE NV12 BUFFERS               *
+     **************************************************************************/
+
+    /* Get input port */
+    assert(omx_get_port(app.handle, 0, &in_port));
+
+    /* Create dmabufs for NV12 buffers */
+    app.nv12_buf_cnt = in_port.nBufferCountActual;
+    app.p_nv12_bufs  = mmngr_alloc_nv12_dmabufs(app.nv12_buf_cnt,
+                                                NV12_FRAME_SIZE_IN_BYTES);
+    assert(app.p_nv12_bufs != NULL);
+
+    /**************************************************************************
+     *               STEP 8: CREATE TEXTURES FROM NV12 BUFFERS                *
+     **************************************************************************/
+
+    /* Create NV12 EGLImage objects */
+    app.p_nv12_imgs = egl_create_nv12_images(app.display,
+                                             FRAME_WIDTH_IN_PIXELS,
+                                             FRAME_HEIGHT_IN_PIXELS,
+                                             app.p_nv12_bufs,
+                                             app.nv12_buf_cnt);
+    assert(app.p_nv12_imgs != NULL);
+
+    /* Create NV12 textures */
+    app.p_nv12_texs = gl_create_textures(app.p_nv12_imgs, app.nv12_buf_cnt);
+    assert(app.p_nv12_texs != NULL);
+
+    /**************************************************************************
+     *             STEP 9: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
+     **************************************************************************/
+
+    /* Create framebuffers */
+    app.p_nv12_fbs = gl_create_framebuffers(app.p_nv12_texs, app.nv12_buf_cnt);
+    assert(app.p_nv12_fbs != NULL);
+
+    /**************************************************************************
+     *                STEP 10: ALLOCATE BUFFERS FOR INPUT PORT                *
+     **************************************************************************/
+
+    /* Transition into state IDLE */
+    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+                                            OMX_CommandStateSet,
+                                            OMX_StateIdle, NULL));
+
+    /* Allocate buffers for input port */
+    app.pp_in_bufs = omx_use_buffers(app.handle, 0,
+                                     app.p_nv12_bufs,
+                                     app.nv12_buf_cnt);
+    assert(app.pp_in_bufs != NULL);
+
+    /**************************************************************************
+     *               STEP 11: ALLOCATE BUFFERS FOR OUTPUT PORT                *
+     **************************************************************************/
+
+    /* Allocate buffers for output port */
+    app.pp_out_bufs = omx_alloc_buffers(app.handle, 1);
+    assert(app.pp_out_bufs != NULL);
+
+    /* Wait until the component is in state IDLE */
+    omx_wait_state(app.handle, OMX_StateIdle);
+
+    /**************************************************************************
+     *             STEP 12: SET UP SHARED DATA FOR OMX CALLBACKS              *
+     **************************************************************************/
+
+    /* Initialize semaphore structures with initial value 0.
+     * Note: They are to be shared between threads of this process */
+    sem_init(&(app.sem_nv12_done), 0, 0);
+    sem_init(&(app.sem_h264_done), 0, 0);
+
+    /* Open file for writing H.264 data */
+    app.p_h264_fd = fopen(H264_FILE_NAME, "w");
+
+    /**************************************************************************
+     *               STEP 13: MAKE OMX READY TO RECEIVE BUFFERS               *
+     **************************************************************************/
+
+    /* Transition into state EXECUTING */
+    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+                                            OMX_CommandStateSet,
+                                            OMX_StateExecuting, NULL));
+    omx_wait_state(app.handle, OMX_StateExecuting);
+
+    /**************************************************************************
+     *                STEP 14: MAKE V4L2 READY TO CAPTURE DATA                *
+     **************************************************************************/
+
+    /* Note: For capturing applications, it is customary to first enqueue all
+     * mapped buffers, then to start capturing and enter the read loop.
+     *
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/mmap.html */
+    assert(v4l2_enqueue_bufs(app.cam_fd, app.yuyv_buf_cnt));
+
+    /* Start capturing */
+    assert(v4l2_enable_capturing(app.cam_fd));
+
+    /**************************************************************************
+     *                         STEP 15: RUN MAIN LOOP                         *
+     **************************************************************************/
+
+    while (is_running)
+    {
+        /* Receive buffer from the camera */
+        assert(v4l2_dequeue_buf(app.cam_fd, &cam_buf));
+
+        /* Bind it as the active framebuffer.
+         * All subsequent rendering operations will now render to NV12 texture:
+         * https://learnopengl.com/Advanced-OpenGL/Framebuffers */
+        glBindFramebuffer(GL_FRAMEBUFFER, app.p_nv12_fbs[0]);
+
+        /* Convert YUYV texture to NV12 texture */
+        gl_conv_yuyv_to_nv12(app.p_yuyv_texs[cam_buf.index], app.gl_resources);
+
+        /* Draw rectangle on NV12 texture */
+        gl_draw_rectangle(app.gl_resources);
+
+        /* Send buffer 'app.pp_in_bufs[0]' to the input port of the component.
+         * If the buffer contains data, 'app.pp_in_bufs[0]->nFilledLen' will not
+         * be zero.
+         *
+         * TODO: Buffer 'app.pp_in_bufs[0]' should have a flag so that we can
+         * know whether it's okay to pass it to 'OMX_EmptyThisBuffer'
+         * (see section 2.2.12 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf')
+         *
+         * Note: 'app.pp_in_bufs[0]->nFilledLen' is set to 0 when
+         * callback 'OMX_CALLBACKTYPE::EmptyBufferDone' is returned */
+        app.pp_in_bufs[0]->nFilledLen = NV12_FRAME_SIZE_IN_BYTES;
+
+        /* Section 6.14.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+        app.pp_in_bufs[0]->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
+        if (g_int_signal)
+        {
+            app.pp_in_bufs[0]->nFlags |= OMX_BUFFERFLAG_EOS;
+            is_running = false;
+        }
+
+        assert(OMX_ErrorNone ==
+               OMX_EmptyThisBuffer(app.handle, app.pp_in_bufs[0]));
+
+        /* Send buffer 'app.pp_out_bufs[0]' to the output port of the component.
+         * It should contain Data NAL.
+         *
+         * If 'app.pp_out_bufs[0]->nOutputPortIndex' is not a valid output port,
+         * the component returns 'OMX_ErrorBadPortIndex'.
+         *
+         * TODO: Each buffer in 'app.pp_out_bufs' should have a flag so that we
+         * can know whether it's okay to pass these to 'OMX_FillThisBuffer'
+         * (see section 2.2.13 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf') */
+        assert(OMX_ErrorNone ==
+               OMX_FillThisBuffer(app.handle, app.pp_out_bufs[0]));
+
+        if (is_first_run || !is_running)
+        {
+            is_first_run = false;
+
+            /* Send buffer 'app.pp_out_bufs[1]' to the output port of the
+             * component.
+             *
+             * When the component encodes for the first time, the buffer should
+             * contain SPS NAL and PPS NAL.
+             * When user presses Ctrl-C, the buffer should contain
+             * End-of-Sequence NAL and End-of-Stream NAL (section 3.1.2 in
+             * document 'R01USxxxxEJxxxx_h264e_v1.0.pdf')
+             */
+            assert(OMX_ErrorNone ==
+                   OMX_FillThisBuffer(app.handle, app.pp_out_bufs[1]));
+
+            sem_wait(&(app.sem_h264_done));
+        }
+
+        /* Wait until the component fills data to 'app.pp_out_bufs[0]'
+         * (see callback 'FillBufferDone').
+         *
+         * TODOs: Should create 2 threads, one is for sending NV12 buffers to
+         * input port and one is for requesting H.264 data from output port */
+        sem_wait(&(app.sem_nv12_done));
+        sem_wait(&(app.sem_h264_done));
+
+        /* Request buffer from camera */
+        assert(v4l2_enqueue_buf(app.cam_fd, cam_buf.index));
+    }
+
+    /* Stop capturing */
+    assert(v4l2_disable_capturing(app.cam_fd));
+
+    /**************************************************************************
+     *                    STEP 16: CLEAN UP OMX' RESOURCES                    *
+     **************************************************************************/
+
+    /* Close file which stores H.264 data */
+    fclose(app.p_h264_fd);
+
+    /* Destroy semaphore structures */
+    sem_destroy(&(app.sem_nv12_done));
+    sem_destroy(&(app.sem_h264_done));
+
+    /* Transition into state IDLE */
+    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+                                            OMX_CommandStateSet,
+                                            OMX_StateIdle, NULL));
+    omx_wait_state(app.handle, OMX_StateIdle);
+
+    /* Transition into state LOADED */
+    assert(OMX_ErrorNone == OMX_SendCommand(app.handle,
+                                            OMX_CommandStateSet,
+                                            OMX_StateLoaded, NULL));
+
+    /* Release buffers and buffer headers from the component.
+     *
+     * The component shall free only the buffer headers if it allocated only
+     * the buffer headers ('OMX_UseBuffer').
+     *
+     * The component shall free both the buffers and the buffer headers if it
+     * allocated both the buffers and buffer headers ('OMX_AllocateBuffer') */
+    omx_dealloc_all_port_bufs(app.handle, 0, app.pp_in_bufs);
+    omx_dealloc_all_port_bufs(app.handle, 1, app.pp_out_bufs);
+
+    /* Wait until the component is in state LOADED */
+    omx_wait_state(app.handle, OMX_StateLoaded);
+
+    /* Free the component's handle */
+    assert(OMX_FreeHandle(app.handle) == OMX_ErrorNone);
+
+    /* Deinitialize OMX IL core */
+    assert(OMX_Deinit() == OMX_ErrorNone);
+
+    /**************************************************************************
+     *                STEP 17: CLEAN UP OPENGL ES'S RESOURCES                 *
+     **************************************************************************/
+
+    /* Delete framebuffers and NV12 textures */
+    egl_delete_images(app.display, app.p_nv12_imgs, app.nv12_buf_cnt);
+
+    gl_delete_textures(app.p_nv12_texs, app.nv12_buf_cnt);
+    gl_delete_framebuffers(app.p_nv12_fbs, app.nv12_buf_cnt);
+
+    /* Deallocate NV12 buffers */
+    mmngr_dealloc_nv12_dmabufs(app.p_nv12_bufs, app.nv12_buf_cnt);
+
+    /* Delete YUYV textures */
+    egl_delete_images(app.display, app.p_yuyv_imgs, app.yuyv_buf_cnt);
+    gl_delete_textures(app.p_yuyv_texs, app.yuyv_buf_cnt);
+
+    /* Delete resources for OpenGL ES */
+    gl_delete_resources(app.gl_resources);
+
+    /* Delete EGL display */
+    egl_delete_display(app.display);
+
+    /**************************************************************************
+     *                   STEP 18: CLEAN UP V4L2'S RESOURCES                   *
+     **************************************************************************/
+
+    /* Clean up YUYV buffers */
+    v4l2_dealloc_dmabufs(app.p_yuyv_bufs, app.yuyv_buf_cnt);
+
+    /* Close the camera */
+    close(app.cam_fd);
+
+    return 0;
+}
+
+/******************************************************************************
+ *                            FUNCTION DEFINITIONS                            *
+ ******************************************************************************/
+
+/**************************** FOR SIGNAL HANDLING *****************************/
+
+void sigint_handler(int signum, siginfo_t * p_info, void * ptr)
+{
+    g_int_signal = 1;
+}
+
+/********************************** FOR V4L2 **********************************/
+
+int v4l2_open_dev(const char * p_name)
+{
+    int dev_fd = -1;
+    struct stat file_st;
+
+    /* Check parameter */
+    assert(p_name != NULL);
+
+    /* Check if 'p_name' exists or not? */
+    if (stat(p_name, &file_st) == -1)
+    {
+        errno_print();
+        return -1;
+    }
+
+    /* Check if 'p_name' is a special character file or not?
+     * The statement is useful if 'p_name' is provided by user */
+    if (S_ISCHR(file_st.st_mode) == 0)
+    {
+        printf("Error: '%s' is not a character special file\n", p_name);
+        return -1;
+    }
+
+    /* Try to open 'p_name' */
+    dev_fd = open(p_name, O_RDWR);
+    if (dev_fd == -1)
+    {
+        errno_print();
+    }
+
+    return dev_fd;
+}
+
+bool v4l2_verify_dev(int dev_fd)
+{
+    struct v4l2_capability caps;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    /* Discover capabilities of the device:
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-querycap.html
+     */
+    if (ioctl(dev_fd, VIDIOC_QUERYCAP, &caps) == -1)
+    {
+        errno_print();
+        return false;
+    }
+
+    /* Make sure the device supports the single-planar API through the
      * Video Capture interface */
-    assert(usb_cam_caps.capabilities & V4L2_CAP_VIDEO_CAPTURE);
+    if (!(caps.capabilities & V4L2_CAP_VIDEO_CAPTURE))
+    {
+        printf("Error: Not a capture device\n");
+        return false;
+    }
 
-    /* Print name and bus information of the USB camera */
-    printf("USB camera: '%s' (bus: '%s')\n", usb_cam_caps.card,
-                                             usb_cam_caps.bus_info);
-
-    /* Make sure the USB camera supports the streaming I/O method.
+    /* Make sure the device supports the streaming I/O method.
      * Otherwise, dmabuf will not work.
-     * Links:
-     *  1. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/io.html
-     *  2. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/mmap.html
-     *  3. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/dmabuf.html
-     *  4. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *     vidioc-expbuf.html
-     *  5. R01US0424EJ0111_VideoCapture_UME_v1.11.pdf */
-    assert(usb_cam_caps.capabilities & V4L2_CAP_STREAMING);
+     *
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/io.html
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/mmap.html
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/dmabuf.html
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-expbuf.html
+     * R01US0424EJ0111_VideoCapture_UME_v1.11.pdf */
+    if (!(caps.capabilities & V4L2_CAP_STREAMING))
+    {
+        printf("Error: Not support streaming I/O method\n");
+        return false;
+    }
 
-    /* Get current data format of the USB camera.
-     * Links:
-     *   1. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *      vidioc-g-fmt.html
-     *   2. https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *      pixfmt-002.html
-     *   3. https://www.kernel.org/doc/html/v4.17/media/uapi/v4l/
-     *      field-order.html */
-    memset(&usb_cam_fmt, 0, sizeof(struct v4l2_format));
-    usb_cam_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    return true;
+}
 
-    /* Enumeration and macro values for 'struct v4l2_format' can be found at:
-     *   https://github.com/torvalds/linux/blob/master/include/uapi/linux/
-     *   videodev2.h */
-    assert(ioctl(usb_cam_fd, VIDIOC_G_FMT, &usb_cam_fmt) == 0);
+void v4l2_print_caps(int dev_fd)
+{
+    struct v4l2_capability caps;
 
-    /* Set and reload data format of the USB camera */
-    usb_cam_fmt.fmt.pix.width = YUYV_FRAME_WIDTH_IN_PIXELS;
-    usb_cam_fmt.fmt.pix.height = YUYV_FRAME_HEIGHT_IN_PIXELS;
-    usb_cam_fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; /* YUV 4:2:2 */
-    usb_cam_fmt.fmt.pix.field = V4L2_FIELD_NONE; /* Progressive format */
+    int ver_major = 0;
+    int ver_minor = 0;
+    int ver_steps = 0;
 
-    assert(ioctl(usb_cam_fd, VIDIOC_S_FMT, &usb_cam_fmt) == 0);
+    /* Check parameter */
+    assert(dev_fd > 0);
 
-    /* Confirm the number of bytes per line of YUYV format */
-    assert(usb_cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH_IN_BYTES);
+    /* Discover capabilities of the device */
+    if (ioctl(dev_fd, VIDIOC_QUERYCAP, &caps) == -1)
+    {
+        errno_print();
+    }
+    else
+    {
+        /* Make sure the below fields are NULL-terminated */
+        caps.card[31]     = '\0';
+        caps.driver[15]   = '\0';
+        caps.bus_info[31] = '\0';
 
-    /* Confirm the size of YUYV frame */
-    assert(usb_cam_fmt.fmt.pix.sizeimage == YUYV_FRAME_SIZE_IN_BYTES);
+        ver_major = (caps.version >> 16) & 0xFF;
+        ver_minor = (caps.version >> 8) & 0xFF;
+        ver_steps = caps.version & 0xFF;
 
-    /* Confirm the pixel format should be YUYV */
-    assert(usb_cam_fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV);
+        printf("V4L2 device:\n");
+        printf("  Name: '%s'\n", caps.card);
+        printf("  Bus: '%s'\n",  caps.bus_info);
+        printf("  Driver: '%s (v%d.%d.%d)'\n", caps.driver, ver_major,
+                                               ver_minor, ver_steps);
+    }
+}
 
-    /* Confirm the video frames should be in progressive format */
-    assert(usb_cam_fmt.fmt.pix.field == V4L2_FIELD_NONE);
+char * v4l2_fourcc_to_str(uint32_t fourcc, char str[8])
+{
+    /* Check parameter */
+    assert(str != NULL);
 
-    /* Get current framerate of the USB camera */
-    memset(&usb_cam_streamparm, 0, sizeof(struct v4l2_streamparm));
-    usb_cam_streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    str[0] = fourcc & 0x7f;
+    str[1] = (fourcc >> 8) & 0x7f;
+    str[2] = (fourcc >> 16) & 0x7f;
+    str[3] = (fourcc >> 24) & 0x7f;
 
-    assert(ioctl(usb_cam_fd, VIDIOC_G_PARM, &usb_cam_streamparm) == 0);
+    if (fourcc & (1 << 31))
+    {
+        str[4] = '-';
+        str[5] = 'B';
+        str[6] = 'E';
+        str[7] = '\0';
+    }
+    else
+    {
+        str[4] = '\0';
+    }
 
-    p_usb_cam_fract = &(usb_cam_streamparm.parm.capture.timeperframe);
+    return str;
+}
+
+void v4l2_print_format(int dev_fd)
+{
+    struct v4l2_format fmt;
+
+    char fourcc_str[8] = { '\0' };
+    const char * p_scan_type = NULL;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    /* Get current format of the device */
+    if (v4l2_get_format(dev_fd, &fmt) == true)
+    {
+        /* Convert FourCC code to string */
+        v4l2_fourcc_to_str(fmt.fmt.pix.pixelformat, fourcc_str);
+
+        /* Get scan type */
+        p_scan_type = (fmt.fmt.pix.field == V4L2_FIELD_NONE) ?
+                      "Progressive" : "Interlaced";
+
+        printf("V4L2 format:\n");
+        printf("  Frame width (pixels): '%d' \n",  fmt.fmt.pix.width);
+        printf("  Frame height (pixels): '%d' \n", fmt.fmt.pix.height);
+        printf("  Bytes per line: '%d'\n",     fmt.fmt.pix.bytesperline);
+        printf("  Frame size (bytes): '%d'\n", fmt.fmt.pix.sizeimage);
+        printf("  Pixel format: '%s'\n", fourcc_str);
+        printf("  Scan type: '%s'\n", p_scan_type);
+    }
+}
+
+void v4l2_print_framerate(int dev_fd)
+{
+    struct v4l2_streamparm params;
+    float framerate = 0;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    /* Get current streaming parameters of the device */
+    if (v4l2_get_stream_params(dev_fd, &params) == true)
+    {
+        /* Calculate framerate */
+        framerate = (1.0f * params.parm.capture.timeperframe.denominator) /
+                            params.parm.capture.timeperframe.numerator;
+
+        printf("V4L2 framerate: '%.1f'\n", framerate);
+    }
+}
+
+bool v4l2_get_format(int dev_fd, struct v4l2_format * p_fmt)
+{
+    struct v4l2_format fmt;
+
+    /* Check parameters */
+    assert((dev_fd > 0) && (p_fmt != NULL));
+
+    /* Get current data format of the device.
+     *
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-g-fmt.html
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/pixfmt-002.html
+     * https://www.kernel.org/doc/html/v4.17/media/uapi/v4l/field-order.html */
+    memset(&fmt, 0, sizeof(struct v4l2_format));
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (ioctl(dev_fd, VIDIOC_G_FMT, &fmt) == -1)
+    {
+        errno_print();
+        return false;
+    }
+
+    /* Copy data from 'fmt' to 'p_fmt' */
+    memcpy(p_fmt, &fmt, sizeof(struct v4l2_format));
+
+    return true;
+}
+
+bool v4l2_get_stream_params(int dev_fd, struct v4l2_streamparm * p_params)
+{
+    struct v4l2_streamparm params;
+
+    /* Check parameters */
+    assert((dev_fd > 0) && (p_params != NULL));
+
+    /* Get current streaming parameters of the device */
+    memset(&params, 0, sizeof(struct v4l2_streamparm));
+    params.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (ioctl(dev_fd, VIDIOC_G_PARM, &params) == -1)
+    {
+        errno_print();
+        return false;
+    }
+
+    /* Copy data from 'params' to 'p_params' */
+    memcpy(p_params, &params, sizeof(struct v4l2_streamparm));
+
+    return true;
+}
+
+bool v4l2_set_format(int dev_fd,
+                     uint32_t img_width, uint32_t img_height,
+                     uint32_t pix_fmt, enum v4l2_field field)
+{
+    struct v4l2_format fmt;
+
+    /* Check parameters */
+    assert(dev_fd > 0);
+    assert((img_width > 0) && (img_height > 0));
+
+    /* Get current format of the device */
+    if (v4l2_get_format(dev_fd, &fmt) == false)
+    {
+        return false;
+    }
+
+    /* Set and reload data format of the device */
+    fmt.fmt.pix.width        = img_width;
+    fmt.fmt.pix.height       = img_height;
+    fmt.fmt.pix.pixelformat  = pix_fmt;
+    fmt.fmt.pix.field        = field;
+
+    if (ioctl(dev_fd, VIDIOC_S_FMT, &fmt) == -1)
+    {
+        errno_print();
+        return false;
+    }
+
+    return true;
+}
+
+bool v4l2_set_framerate(int dev_fd, uint32_t framerate)
+{
+    struct v4l2_streamparm params;
+
+    /* Check parameters */
+    assert((dev_fd > 0) && (framerate > 0));
+
+    /* Get current framerate of the device */
+    if (v4l2_get_stream_params(dev_fd, &params) == false)
+    {
+        return false;
+    }
 
     /* Note: Should set the framerate (1/25, 1/30...) when the flag
      * 'V4L2_CAP_TIMEPERFRAME' is set in the 'capability' field.
      *
-     * Links:
-     *   1. https://www.kernel.org/doc/html/v5.0/media/uapi/v4l/
-     *      vidioc-g-parm.html
-     *   2. https://github.com/GStreamer/gst-plugins-good/blob/master/sys/
-     *      v4l2/gstv4l2object.c#L3481 */
-    if (usb_cam_streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME)
+     * https://www.kernel.org/doc/html/v5.0/media/uapi/v4l/vidioc-g-parm.html */
+    if (!(params.parm.capture.capability & V4L2_CAP_TIMEPERFRAME))
     {
-        p_usb_cam_fract->numerator = 1;
-        p_usb_cam_fract->denominator = V4L2_REQUESTED_FPS;
-
-        assert(ioctl(usb_cam_fd, VIDIOC_S_PARM, &usb_cam_streamparm) == 0);
+        printf("Error: Framerate setting is not supported\n");
+        return false;
     }
 
-    /* Print information of YUYV frame */
-    printf("YUYV frame: '%dx%dp (%d/%d)'\n", usb_cam_fmt.fmt.pix.width,
-                                             usb_cam_fmt.fmt.pix.height,
-                                             p_usb_cam_fract->numerator,
-                                             p_usb_cam_fract->denominator);
+    params.parm.capture.timeperframe.numerator   = 1;
+    params.parm.capture.timeperframe.denominator = framerate;
 
-    /**********************************************
-     * Step 3: Allocate buffer for the USB camera *
-     **********************************************/
+    if (ioctl(dev_fd, VIDIOC_S_PARM, &params) == -1)
+    {
+        errno_print();
+        return false;
+    }
 
-    /* Request and allocate a buffer for the USB camera */
-    memset(&usb_cam_reqbufs, 0, sizeof(struct v4l2_requestbuffers));
-    usb_cam_reqbufs.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    usb_cam_reqbufs.memory = V4L2_MEMORY_MMAP;
-    usb_cam_reqbufs.count = 1;
+    return true;
+}
 
-    /* Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-reqbufs.html */
-    assert(ioctl(usb_cam_fd, VIDIOC_REQBUFS, &usb_cam_reqbufs) == 0);
-    assert(usb_cam_reqbufs.count > 0);
+bool v4l2_export_dmabuf(int dev_fd, uint32_t index, v4l2_dmabuf_exp_t * p_buf)
+{
+    char * p_virt_addr = NULL;
+
+    struct v4l2_buffer buf;
+    struct v4l2_exportbuffer expbuf;
+
+    /* Check parameters */
+    assert((dev_fd > 0) && (p_buf != NULL));
 
     /* Get virtual address of the buffer */
-    memset(&usb_cam_buf, 0, sizeof(struct v4l2_buffer));
-    usb_cam_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    usb_cam_buf.memory = V4L2_MEMORY_MMAP;
-    usb_cam_buf.index = 0;
+    memset(&buf, 0, sizeof(struct v4l2_buffer));
+    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index  = index;
 
-    /* Link: https://www.kernel.org/doc/html/v5.0/media/uapi/v4l/
-     *       vidioc-querybuf.html */
-    assert(ioctl(usb_cam_fd, VIDIOC_QUERYBUF, &usb_cam_buf) == 0);
-
-    /* Map 'usb_cam_fd' into memory */
-    p_yuyv_user_virt_addr = mmap(NULL, /* Kernel chooses (page-aligned) address
-                                        * at which to create mapping */
-                                 usb_cam_buf.length, /* Length of the mapping */
-                                 PROT_READ | PROT_WRITE, /* Recommended */
-                                 MAP_SHARED,             /* Recommended */
-                                 usb_cam_fd,
-                                 usb_cam_buf.m.offset);
-
-    assert(usb_cam_buf.length == YUYV_FRAME_SIZE_IN_BYTES);
-    assert(p_yuyv_user_virt_addr != MAP_FAILED);
+    /* https://www.kernel.org/doc/html/v5.0/media/uapi/v4l/vidioc-querybuf.html
+     */
+    if (ioctl(dev_fd, VIDIOC_QUERYBUF, &buf) == -1)
+    {
+        errno_print();
+        return false;
+    }
 
     /* Export the buffer as a dmabuf file descriptor */
-    memset(&usb_cam_expbuf, 0, sizeof(struct v4l2_exportbuffer));
-    usb_cam_expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    usb_cam_expbuf.index = 0;
+    memset(&expbuf, 0, sizeof(struct v4l2_exportbuffer));
+    expbuf.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    expbuf.index = index;
 
-    /* Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-expbuf.html */
-    assert(ioctl(usb_cam_fd, VIDIOC_EXPBUF, &usb_cam_expbuf) == 0);
+    /* https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-expbuf.html */
+    if (ioctl(dev_fd, VIDIOC_EXPBUF, &expbuf) == -1)
+    {
+        errno_print();
+        return false;
+    }
 
-    yuyv_dmabuf_fd = usb_cam_expbuf.fd;
-    assert(yuyv_dmabuf_fd != -1);
+    /* Map 'dev_fd' into memory.
+     * Notes:
+     *   - 1st argument: Kernel chooses a page-aligned address at which to
+     *                   create mapping.
+     *   - 2nd argument: Length of the mapping.
+     *   - 3rd argument: Required.
+     *   - 4th argument: Recommended */
+    p_virt_addr = mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, dev_fd, buf.m.offset);
 
-    /****************************
-     * Step 4: Start capturing  *
-     ****************************/
+    if (p_virt_addr == MAP_FAILED)
+    {
+        /* Close dmabuf file */
+        close(expbuf.fd);
 
-    /* Note: For capturing applications, it is customary to first enqueue all
-     * mapped buffers, then to start capturing and enter the read loop.
-     * Here the application waits until a filled buffer can be dequeued, and
-     * re-enqueues the buffer when the data is no longer needed.
-     *
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/mmap.html */
+        errno_print();
+        return false;
+    }
 
-    /* Enqueue the empty buffer in the driver's incoming queue.
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-qbuf.html */
-    memset(&usb_cam_buf, 0, sizeof(struct v4l2_buffer));
-    usb_cam_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    usb_cam_buf.memory = V4L2_MEMORY_MMAP;
-    usb_cam_buf.index = 0;
+    p_buf->dmabuf_fd   = expbuf.fd;
+    p_buf->p_virt_addr = p_virt_addr;
+    p_buf->size        = buf.length;
 
-    assert(ioctl(usb_cam_fd, VIDIOC_QBUF, &usb_cam_buf) == 0);
+    return true;
+}
 
-    /* Start streaming I/O
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-streamon.html */
-    usb_cam_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    assert(ioctl(usb_cam_fd, VIDIOC_STREAMON, &usb_cam_buf_type) == 0);
+v4l2_dmabuf_exp_t * v4l2_alloc_dmabufs(int dev_fd, uint32_t * p_count)
+{
+    v4l2_dmabuf_exp_t * p_bufs = NULL;
 
-    /* Dequeue the filled buffer from the driver's outgoing process
+    uint32_t index = 0;
+    struct v4l2_requestbuffers reqbufs;
+
+    /* Check parameters */
+    assert(dev_fd > 0);
+    assert((p_count != NULL) && ((*p_count) > 0));
+
+    /* Request and allocate buffers for the device */
+    memset(&reqbufs, 0, sizeof(struct v4l2_requestbuffers));
+    reqbufs.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    reqbufs.memory = V4L2_MEMORY_MMAP;
+    reqbufs.count  = *p_count;
+
+    /* https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-reqbufs.html
+     */
+    if (ioctl(dev_fd, VIDIOC_REQBUFS, &reqbufs) == -1)
+    {
+        errno_print();
+        return NULL;
+    }
+
+    /* Exit if the driver runs out of free memory */
+    if (reqbufs.count == 0)
+    {
+        printf("Error: Failed to allocate buffers due to out of memory\n");
+        return NULL;
+    }
+
+    /* Allocate an array of struct 'v4l2_dmabuf_exp_t' */
+    p_bufs = (v4l2_dmabuf_exp_t *)
+             malloc(reqbufs.count * sizeof(v4l2_dmabuf_exp_t));
+
+    /* Export dmabufs */
+    for (index = 0; index < reqbufs.count; index++)
+    {
+        if (v4l2_export_dmabuf(dev_fd, index, p_bufs + index) == false)
+        {
+            break;
+        }
+    }
+
+    if (index < reqbufs.count)
+    {
+        printf("Error: Failed to export dmabuf at buffer index '%d'\n", index);
+
+        v4l2_dealloc_dmabufs(p_bufs, index);
+        return NULL;
+    }
+
+    /* Update the actual number of buffers allocated */
+    *p_count = reqbufs.count;
+
+    return p_bufs;
+}
+
+void v4l2_dealloc_dmabufs(v4l2_dmabuf_exp_t * p_bufs, uint32_t count)
+{
+    uint32_t index = 0;
+
+    /* Check parameter */
+    assert(p_bufs != NULL);
+
+    for (index = 0; index < count; index++)
+    {
+        /* It is recommended to close a dmabuf file when it is no longer
+         * used to allow the associated memory to be reclaimed */
+        close((p_bufs + index)->dmabuf_fd);
+
+        /* Unmap pages of memory */
+        munmap((p_bufs + index)->p_virt_addr, (p_bufs + index)->size);
+    }
+
+    /* Free entire array */
+    free(p_bufs);
+}
+
+bool v4l2_enqueue_buf(int dev_fd, uint32_t index)
+{
+    bool b_is_success = true;
+    struct v4l2_buffer buf;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    memset(&buf, 0, sizeof(struct v4l2_buffer));
+    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index  = index;
+
+    /* https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-qbuf.html
+     */
+    if (ioctl(dev_fd, VIDIOC_QBUF, &buf) == -1)
+    {
+        errno_print();
+        b_is_success = false;
+    }
+
+    return b_is_success;
+}
+
+bool v4l2_enqueue_bufs(int dev_fd, uint32_t count)
+{
+    uint32_t index = 0;
+    bool b_is_success = true;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    for (index = 0; index < count; index++)
+    {
+        if (v4l2_enqueue_buf(dev_fd, index) == false)
+        {
+            b_is_success = false;
+            break;
+        }
+    }
+
+    return b_is_success;
+}
+
+bool v4l2_dequeue_buf(int dev_fd, struct v4l2_buffer * p_buf)
+{
+    struct v4l2_buffer buf;
+
+    /* Check parameters */
+    assert(dev_fd > 0);
+    assert(p_buf != NULL);
+
+    /* Dequeue the filled buffer from the driver's outgoing process.
      *
      * Note: By default, 'VIDIOC_DQBUF' blocks when no buffer is in the
      * outgoing queue. When the 'O_NONBLOCK' flag was given to the 'open()'
      * function, 'VIDIOC_DQBUF' returns immediately with an 'EAGAIN' error
      * code when no buffer is available.
      *
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-qbuf.html */
-    memset(&usb_cam_buf, 0, sizeof(struct v4l2_buffer));
-    usb_cam_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    usb_cam_buf.memory = V4L2_MEMORY_MMAP;
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-qbuf.html
+     */
+    memset(&buf, 0, sizeof(struct v4l2_buffer));
+    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
 
-    assert(ioctl(usb_cam_fd, VIDIOC_DQBUF, &usb_cam_buf) == 0);
-    assert(usb_cam_buf.bytesused == YUYV_FRAME_SIZE_IN_BYTES);
+    if (ioctl(dev_fd, VIDIOC_DQBUF, &buf) == -1)
+    {
+        errno_print();
+        return false;
+    }
 
-    /******************************************
-     * Step 5: Get YUYV data from USB camera. *
-     *         Then write to a file           *
-     ******************************************/
+    *p_buf = buf;
+    return true;
+}
 
-    file_write_buffer("out-yuyv-640x480-1.raw",
-                      p_yuyv_user_virt_addr, YUYV_FRAME_SIZE_IN_BYTES);
+bool v4l2_enable_capturing(int dev_fd)
+{
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    /* Stop streaming I/O
-     * Link: https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/
-     *       vidioc-streamon.html */
-    usb_cam_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    assert(ioctl(usb_cam_fd, VIDIOC_STREAMOFF, &usb_cam_buf_type) == 0);
+    /* Check parameter */
+    assert(dev_fd > 0);
 
-    /**********************************************
-     * Step 6: Set up EGL display and EGL context *
-     **********************************************/
+    /* Start streaming I/O:
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-streamon.html
+     */
+    if (ioctl(dev_fd, VIDIOC_STREAMON, &type) == -1)
+    {
+        errno_print();
+        return false;
+    }
 
-    EGLDisplay egl_display = EGL_NO_DISPLAY;
-    EGLContext egl_context = EGL_NO_CONTEXT;
+    return true;
+}
 
-    EGLConfig fb_config;
-    EGLint number_of_configs = 0;
+bool v4l2_disable_capturing(int dev_fd)
+{
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    /* Stop streaming I/O:
+     * https://www.kernel.org/doc/html/v4.9/media/uapi/v4l/vidioc-streamon.html
+     */
+    if (ioctl(dev_fd, VIDIOC_STREAMOFF, &type) == -1)
+    {
+        errno_print();
+        return false;
+    }
+
+    return true;
+}
+
+/********************************** FOR OMX ***********************************/
+
+OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
+                                OMX_EVENTTYPE eEvent, OMX_U32 nData1,
+                                OMX_U32 nData2, OMX_PTR pEventData)
+{
+    char * p_state_str = NULL;
+
+    switch (eEvent)
+    {
+        case OMX_EventCmdComplete:
+        {
+            if (nData1 == OMX_CommandStateSet)
+            {
+                p_state_str = omx_state_to_str((OMX_STATETYPE)nData2);
+                if (p_state_str != NULL)
+                {
+                    /* Print OMX state */
+                    printf("OMX state: '%s'\n", p_state_str);
+                    free(p_state_str);
+                }
+            }
+        }
+        break;
+
+        case OMX_EventBufferFlag:
+        {
+            /* The buffer contains the last output picture data */
+            printf("End-of-Stream\n");
+        }
+        break;
+
+        case OMX_EventError:
+        {
+            /* Section 2.1.2 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+            printf("OMX error event: '0x%x'\n", nData1);
+        }
+        break;
+
+        default:
+        {
+            /* Intentionally left blank */
+        }
+        break;
+    }
+
+    return OMX_ErrorNone;
+}
+
+OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent,
+                                    OMX_PTR pAppData,
+                                    OMX_BUFFERHEADERTYPE* pBuffer)
+{
+    app_t * p_data = (app_t *)pAppData;
+    if (p_data != NULL)
+    {
+        /* TODO: Should enable the flag to allow 'pBuffer' to be used
+         * (see step 11.6) */
+        sem_post(&(p_data->sem_nv12_done));
+    }
+
+    printf("EmptyBufferDone is called\n");
+    return OMX_ErrorNone;
+}
+
+OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent,
+                                   OMX_PTR pAppData,
+                                   OMX_BUFFERHEADERTYPE* pBuffer)
+{
+    app_t * p_data = (app_t *)pAppData;
+    if (p_data != NULL)
+    {
+        /* TODOs:
+         *   - Should enable the flag to allow 'pBuffer' to be used
+         *     (see step 11.7).
+         *
+         *   - This is a blocking call so the application should not attempt to
+         *     refill the buffers during this call, but should queue them and
+         *     refill them in another thread.
+         *
+         * For trial, we just write H.264 data to a file */
+        if ((pBuffer != NULL) && (pBuffer->nFilledLen > 0))
+        {
+            fwrite((char *)(pBuffer->pBuffer), sizeof(char),
+                   pBuffer->nFilledLen, p_data->p_h264_fd);
+        }
+
+        sem_post(&(p_data->sem_h264_done));
+    }
+
+    printf("FillBufferDone is called\n");
+    return OMX_ErrorNone;
+}
+
+void omx_wait_state(OMX_HANDLETYPE handle, OMX_STATETYPE state)
+{
+    OMX_ERRORTYPE omx_error = OMX_ErrorNone;
+    OMX_STATETYPE omx_cur_state = OMX_StateInvalid;
+
+    do
+    {
+        omx_error = OMX_GetState(handle, &omx_cur_state);
+        if (omx_error != OMX_ErrorNone)
+        {
+            printf("Error: Failed to get current state of OMX MC\n");
+            break;
+        }
+    }
+    while (omx_cur_state != state);
+}
+
+char * omx_state_to_str(OMX_STATETYPE state)
+{
+    char * p_state_str = NULL;
+
+    struct
+    {
+        OMX_STATETYPE state;
+        const char *  p_state_str;
+    }
+    state_mapping[] =
+    {
+        /* The component has detected that its internal data structures are
+         * corrupted to the point that it cannot determine its state properly */
+        { OMX_StateInvalid, "OMX_StateInvalid" },
+
+        /* The component has been loaded but has not completed initialization.
+         * The 'OMX_SetParameter' macro and the 'OMX_GetParameter' macro are
+         * the only macros allowed to be sent to the component in this state */
+        { OMX_StateLoaded, "OMX_StateLoaded" },
+
+        /* The component initialization has been completed successfully and
+         * the component is ready to start */
+        { OMX_StateIdle, "OMX_StateIdle" },
+
+        /* The component has accepted the start command and is processing data
+         * (if data is available) */
+        { OMX_StateExecuting, "OMX_StateExecuting" },
+
+        /* The component has received pause command */
+        { OMX_StatePause, "OMX_StatePause" },
+
+        /* The component is waiting for resources, either after preemption or
+         * before it gets the resources requested.
+         * See OMX IL specification 1.1.2 for complete details */
+        { OMX_StateWaitForResources, "OMX_StateWaitForResources" },
+    };
+
+    uint32_t len   = sizeof(state_mapping) / sizeof(state_mapping[0]);
+    uint32_t index = 0;
+
+    for (index = 0; index < len; index++)
+    {
+        if (state == state_mapping[index].state)
+        {
+            p_state_str = malloc(strlen(state_mapping[index].p_state_str) + 1);
+            strcpy(p_state_str, state_mapping[index].p_state_str);
+
+            break;
+        }
+    }
+
+    return p_state_str;
+}
+
+void omx_print_mc_role(OMX_HANDLETYPE handle)
+{
+    OMX_PARAM_COMPONENTROLETYPE role;
+    OMX_INIT_STRUCTURE(&role);
+
+    if (OMX_ErrorNone ==
+        OMX_GetParameter(handle, OMX_IndexParamStandardComponentRole, &role))
+    {
+        printf("OMX media component's role: '%s'\n", role.cRole);
+    }
+}
+
+bool omx_get_port(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                  OMX_PARAM_PORTDEFINITIONTYPE * p_port)
+{
+    OMX_PARAM_PORTDEFINITIONTYPE port;
+
+    /* Check parameter */
+    assert(p_port != NULL);
+
+    OMX_INIT_STRUCTURE(&port);
+    port.nPortIndex = port_idx;
+
+    if (OMX_ErrorNone !=
+        OMX_GetParameter(handle, OMX_IndexParamPortDefinition, &port))
+    {
+        printf("Error: Failed to get port at index '%d'\n", port_idx);
+        return false;
+    }
+
+    /* Copy data from 'port' to 'p_port' */
+    memcpy(p_port, &port, sizeof(struct OMX_PARAM_PORTDEFINITIONTYPE));
+
+    return true;
+}
+
+bool omx_get_bitrate_ctrl(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                          OMX_VIDEO_PARAM_BITRATETYPE * p_ctrl)
+{
+    OMX_VIDEO_PARAM_BITRATETYPE ctrl;
+
+    /* Check parameter */
+    assert(p_ctrl != NULL);
+
+    OMX_INIT_STRUCTURE(&ctrl);
+    ctrl.nPortIndex = port_idx;
+
+    if (OMX_ErrorNone !=
+        OMX_GetParameter(handle, OMX_IndexParamVideoBitrate, &ctrl))
+    {
+        printf("Error: Failed to get bitrate control of port '%d'\n", port_idx);
+        return false;
+    }
+
+    /* Copy data from 'ctrl' to 'p_ctrl' */
+    memcpy(p_ctrl, &ctrl, sizeof(struct OMX_VIDEO_PARAM_BITRATETYPE));
+
+    return true;
+}
+
+bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
+                         OMX_U32 frame_width, OMX_U32 frame_height,
+                         OMX_COLOR_FORMATTYPE color_fmt, OMX_U32 framerate)
+{
+    bool is_success = false;
+    OMX_PARAM_PORTDEFINITIONTYPE in_port;
+
+    /* Check parameters */
+    assert((frame_width > 0) && (frame_height > 0));
+    assert(framerate > 0);
+
+    /* Get input port */
+    if (omx_get_port(handle, 0, &in_port) == true)
+    {
+        /* Configure and set new parameters to input port */
+        in_port.format.video.nFrameWidth   = frame_width;
+        in_port.format.video.nFrameHeight  = frame_height;
+        in_port.format.video.nStride       = OMX_STRIDE(frame_width);
+        in_port.format.video.nSliceHeight  = OMX_SLICE_HEIGHT(frame_height);
+        in_port.format.video.eColorFormat  = color_fmt;
+        in_port.format.video.xFramerate    = framerate << 16; /* Q16 format */
+
+        if (OMX_ErrorNone ==
+            OMX_SetParameter(handle, OMX_IndexParamPortDefinition, &in_port))
+        {
+            is_success = true;
+        }
+    }
+
+    if (!is_success)
+    {
+        printf("Error: Failed to set input port\n");
+    }
+
+    return is_success;
+}
+
+bool omx_set_out_port_fmt(OMX_HANDLETYPE handle, OMX_U32 bitrate,
+                          OMX_VIDEO_CODINGTYPE compression_fmt)
+{
+    bool b_set_fmt_ok     = false;
+    bool b_set_bitrate_ok = false;
+
+    OMX_VIDEO_PARAM_BITRATETYPE ctrl;
+    OMX_PARAM_PORTDEFINITIONTYPE out_port;
+
+    /* Check parameter */
+    assert(bitrate > 0);
+
+    /* Get output port */
+    if (omx_get_port(handle, 1, &out_port) == true)
+    {
+        /* Configure and set compression format to output port */
+        out_port.format.video.eCompressionFormat = compression_fmt;
+
+        if (OMX_ErrorNone ==
+            OMX_SetParameter(handle, OMX_IndexParamPortDefinition, &out_port))
+        {
+            b_set_fmt_ok = true;
+        }
+    }
+
+    /* Get video encode bitrate control for output port */
+    if (omx_get_bitrate_ctrl(handle, 1, &ctrl) == true)
+    {
+        /* Configure and set bitrate to output port */
+        ctrl.nTargetBitrate = bitrate;
+        ctrl.eControlRate   = OMX_Video_ControlRateConstant;
+
+        if (OMX_ErrorNone ==
+            OMX_SetParameter(handle, OMX_IndexParamVideoBitrate, &ctrl))
+        {
+            b_set_bitrate_ok = true;
+        }
+    }
+
+    if (!b_set_fmt_ok || !b_set_bitrate_ok)
+    {
+        printf("Error: Failed to set output port\n");
+    }
+
+    return (b_set_fmt_ok && b_set_bitrate_ok);
+}
+
+bool omx_set_port_buf_cnt(OMX_HANDLETYPE handle,
+                          OMX_U32 port_idx, OMX_U32 buf_cnt)
+{
+    OMX_PARAM_PORTDEFINITIONTYPE port;
+
+    /* Check parameter */
+    assert(buf_cnt > 0);
+
+    /* Get port 'port_idx' */
+    if (omx_get_port(handle, port_idx, &port) == false)
+    {
+        return false;
+    }
+
+    /* Value 'buf_cnt' must not be less than 'nBufferCountMin' */
+    if (buf_cnt < port.nBufferCountMin)
+    {
+        printf("Error: Port '%d' requires no less than '%d' buffers\n",
+                                        port_idx, port.nBufferCountMin);
+        return false;
+    }
+
+    /* Set the number of buffers that are required on port 'port_idx' */
+    port.nBufferCountActual = buf_cnt;
+
+    if (OMX_ErrorNone !=
+        OMX_SetParameter(handle, OMX_IndexParamPortDefinition, &port))
+    {
+        printf("Error: Failed to set port at index '%d'\n", port_idx);
+        return false;
+    }
+
+    return true;
+}
+
+OMX_BUFFERHEADERTYPE ** omx_use_buffers(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                                        mmngr_buf_t * p_bufs, uint32_t count)
+{
+    uint32_t index = 0;
+
+    OMX_PARAM_PORTDEFINITIONTYPE port;
+    OMX_BUFFERHEADERTYPE ** pp_bufs = NULL;
+
+    /* Check parameters */
+    assert((p_bufs != NULL) && (count > 0));
+
+    /* Get port */
+    if (omx_get_port(handle, port_idx, &port) == false)
+    {
+        return NULL;
+    }
+
+    /* Allocate an array of struct 'OMX_BUFFERHEADERTYPE' */
+    pp_bufs = (OMX_BUFFERHEADERTYPE **)
+              malloc(count * sizeof(OMX_BUFFERHEADERTYPE *));
+
+    for (index = 0; index < count; index++)
+    {
+        /* See 'Table 6-3' in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+        if (p_bufs[index].size != port.nBufferSize)
+        {
+            printf("Error: Require size '%d', not '%ld'\n",
+                   port.nBufferSize, p_bufs[index].size);
+            break;
+        }
+
+        /* See section 2.2.9 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf'
+         * and section 4.1.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+        if (OMX_ErrorNone != OMX_UseBuffer(handle, pp_bufs + index,
+                                           port_idx, NULL, p_bufs[index].size,
+                                           (OMX_U8 *)(p_bufs[index].hard_addr)))
+        {
+            printf("Error: Failed to use buffer at index '%d'\n", index);
+            break;
+        }
+    }
+
+    if (index < count)
+    {
+        omx_dealloc_port_bufs(handle, port_idx, pp_bufs, index);
+        return NULL;
+    }
+
+    return pp_bufs;
+}
+
+OMX_BUFFERHEADERTYPE ** omx_alloc_buffers(OMX_HANDLETYPE handle,
+                                          OMX_U32 port_idx)
+{
+    uint32_t index = 0;
+
+    OMX_PARAM_PORTDEFINITIONTYPE port;
+    OMX_BUFFERHEADERTYPE ** pp_bufs = NULL;
+
+    /* Get port */
+    if (omx_get_port(handle, port_idx, &port) == false)
+    {
+        return NULL;
+    }
+
+    pp_bufs = (OMX_BUFFERHEADERTYPE **)
+              malloc(port.nBufferCountActual * sizeof(OMX_BUFFERHEADERTYPE *));
+
+    for (index = 0; index < port.nBufferCountActual; index++)
+    {
+        /* See section 2.2.10 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf'
+         * and 'Table 6-3' in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
+        if (OMX_ErrorNone != OMX_AllocateBuffer(handle,
+                                                pp_bufs + index,
+                                                port_idx, NULL,
+                                                port.nBufferSize))
+        {
+            printf("Error: Failed to allocate buffers at index '%d'\n", index);
+            break;
+        }
+    }
+
+    if (index < port.nBufferCountActual)
+    {
+        omx_dealloc_port_bufs(handle, port_idx, pp_bufs, index);
+        return NULL;
+    }
+
+    return pp_bufs;
+}
+
+void omx_dealloc_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                           OMX_BUFFERHEADERTYPE ** pp_bufs, uint32_t count)
+{
+    uint32_t index = 0;
+
+    /* Check parameter */
+    assert(pp_bufs != NULL);
+
+    for (index = 0; index < count; index++)
+    {
+        OMX_FreeBuffer(handle, port_idx, pp_bufs[index]);
+    }
+
+    /* Free entire array */
+    free (pp_bufs);
+}
+
+void omx_dealloc_all_port_bufs(OMX_HANDLETYPE handle, OMX_U32 port_idx,
+                               OMX_BUFFERHEADERTYPE ** pp_bufs)
+{
+    OMX_PARAM_PORTDEFINITIONTYPE port;
+
+    /* Check parameter */
+    assert(pp_bufs != NULL);
+
+    /* Get port */
+    if (omx_get_port(handle, port_idx, &port) == true)
+    {
+        omx_dealloc_port_bufs(handle, port_idx, pp_bufs,
+                              port.nBufferCountActual);
+    }
+}
+
+/********************************** FOR EGL ***********************************/
+
+EGLDisplay egl_create_display()
+{
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT;
 
     EGLint config_attribs[] =
     {
@@ -702,54 +2329,133 @@ int main(int argc, char ** pp_argv)
         EGL_NONE,
     };
 
-    EGLBoolean b_egl_initialize_ok = EGL_FALSE;
-    EGLBoolean b_egl_makecurrent_ok = EGL_FALSE;
+    EGLConfig fb_config;
+    EGLint config_cnt = 0;
 
-    /* Obtain the EGL display connection for EGL_DEFAULT_DISPLAY */
-    egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    assert(egl_display != EGL_NO_DISPLAY);
+    /* Get default EGL display connection */
+    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY)
+    {
+        printf("Error: Failed to get EGL display\n");
+        return EGL_NO_DISPLAY;
+    }
 
-    /* Initialize the EGL display connection obtained with eglGetDisplay() */
-    b_egl_initialize_ok = eglInitialize(egl_display, NULL, NULL);
-    assert(b_egl_initialize_ok == EGL_TRUE);
+    /* Initialize the EGL display connection */
+    if (eglInitialize(display, NULL, NULL) == EGL_FALSE)
+    {
+        printf("Error: Failed to initialize EGL display\n");
+        return EGL_NO_DISPLAY;
+    }
 
-    /* Get a list of all EGL framebuffer configurations that match the
-     * 'config_attribs' */
-    eglChooseConfig(egl_display, config_attribs, &fb_config, 1,
-                    &number_of_configs);
-    assert(number_of_configs == 1);
+    /* Get a list of EGL frame buffer configurations */
+    eglChooseConfig(display, config_attribs, &fb_config, 1, &config_cnt);
+    if (config_cnt == 0)
+    {
+        printf("Error: Failed to get EGL frame buffer configs\n");
+        return EGL_NO_DISPLAY;
+    }
 
     /* Create an EGL rendering context for the current rendering API.
      * The context can then be used to render into an EGL drawing surface */
-    egl_context = eglCreateContext(egl_display, fb_config, EGL_NO_CONTEXT,
-                                   context_attribs);
-    assert(egl_context !=  EGL_NO_CONTEXT);
+    context = eglCreateContext(display, fb_config,
+                               EGL_NO_CONTEXT, context_attribs);
+    if (context == EGL_NO_CONTEXT)
+    {
+        printf("Error: Failed to create EGL context\n");
+        return EGL_NO_DISPLAY;
+    }
 
-    /* Bind context to the current rendering thread and to the 'draw' and
-     * 'read' surfaces */
-    b_egl_makecurrent_ok = eglMakeCurrent(egl_display, EGL_NO_SURFACE,
-                                          EGL_NO_SURFACE, egl_context);
-    assert(b_egl_makecurrent_ok == EGL_TRUE);
+    /* Bind context without read and draw surfaces */
+    if (eglMakeCurrent(display, EGL_NO_SURFACE,
+                       EGL_NO_SURFACE, context) == EGL_FALSE)
+    {
+        printf("Error: Failed to bind context without surfaces\n");
+        return EGL_NO_DISPLAY;
+    }
 
-    /************************************************
-     * Step 7: Set up a place to render a rectangle *
-     ************************************************/
+    return display;
+}
 
-    EGLCREATEIMAGEKHR eglCreateImageKHR = NULL;
-    EGLDESTROYIMAGEKHR eglDestroyImageKHR = NULL;
-    GLEGLIMAGETARGETTEXTURE2DOES glEGLImageTargetTexture2DOES = NULL;
+void egl_delete_display(EGLDisplay display)
+{
+    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglTerminate(display);
+}
 
-    EGLint yuyv_eglimage_attribs[] =
+bool egl_is_ext_supported(EGLDisplay display, const char * p_name)
+{
+    const char * p_ext_funcs = NULL;
+
+    /* Check parameters */
+    assert((display != EGL_NO_DISPLAY) && (p_name != NULL));
+
+    /* A non-NULL return value from 'eglGetProcAddress' does not
+     * guarantee that an extension function is supported at runtime.
+     *
+     * For EGL extension functions, the program must also make
+     * a corresponding query 'eglQueryString' to determine if a
+     * function is supported by EGL */
+    p_ext_funcs = eglQueryString(display, EGL_EXTENSIONS);
+    if (p_ext_funcs == NULL)
+    {
+        printf("Error: Failed to get EGL extensions\n");
+        return false;
+    }
+
+    /* Find extension 'p_name' in 'p_ext_funcs' */
+    if (str_find_whole_str(p_ext_funcs, " ", p_name) == false)
+    {
+        printf("Error: Extension '%s' does not exist\n", p_name);
+        return false;
+    }
+
+    return true;
+}
+
+bool egl_init_ext_funcs(EGLDisplay display)
+{
+    /* Check parameter */
+    assert(display != EGL_NO_DISPLAY);
+
+    /* Get address of function 'eglCreateImageKHR' */
+    eglCreateImageKHR = (EGLCREATEIMAGEKHR)
+                        eglGetProcAddress("eglCreateImageKHR");
+
+    /* Get address of function 'eglDestroyImageKHR' */
+    eglDestroyImageKHR = (EGLDESTROYIMAGEKHR)
+                         eglGetProcAddress("eglDestroyImageKHR");
+
+    if ((eglCreateImageKHR == NULL) || (eglDestroyImageKHR == NULL) ||
+        !egl_is_ext_supported(display, "EGL_KHR_image_base") ||
+        !egl_is_ext_supported(display, "EGL_EXT_image_dma_buf_import"))
+    {
+        printf("Error: Failed to init EGL extension functions\n");
+        return false;
+    }
+
+    return true;
+}
+
+EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
+                                  uint32_t img_height, int dmabuf_fd)
+{
+    EGLImageKHR img = EGL_NO_IMAGE_KHR;
+
+    /* Check parameters */
+    assert(display != EGL_NO_DISPLAY);
+    assert((img_width > 0) && (img_height > 0) && (dmabuf_fd > 0));
+
+    EGLint img_attribs[] =
     {
         /* The logical dimensions of YUYV buffer in pixels */
-        EGL_WIDTH, YUYV_FRAME_WIDTH_IN_PIXELS,
-        EGL_HEIGHT, YUYV_FRAME_HEIGHT_IN_PIXELS,
+        EGL_WIDTH, img_width,
+        EGL_HEIGHT, img_height,
 
         /* Pixel format of the buffer, as specified by 'drm_fourcc.h' */
         EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_YUYV,
 
         /* The dmabuf file descriptor of plane 0 of the image */
-        EGL_DMA_BUF_PLANE0_FD_EXT, yuyv_dmabuf_fd,
+        EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf_fd,
 
         /* The offset from the start of the dmabuf of the first sample in
          * plane 0, in bytes */
@@ -757,7 +2463,7 @@ int main(int argc, char ** pp_argv)
 
         /* The number of bytes between the start of subsequent rows of samples
          * in plane 0 */
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, YUYV_FRAME_WIDTH_IN_PIXELS * 2/*bytes*/,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, img_width * 2, /* 2 bytes per pixel */
 
         /* Y, U, and V color range from [0, 255] */
         EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT,
@@ -770,42 +2476,346 @@ int main(int argc, char ** pp_argv)
         EGL_NONE,
     };
 
-    EGLImageKHR yuyv_eglimage = EGL_NO_IMAGE_KHR;
-    GLuint yuyv_texture_id = 0;
+    /* Create EGLImage from a Linux dmabuf file descriptor */
+    img = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                            (EGLClientBuffer)NULL, img_attribs);
+    if (img == EGL_NO_IMAGE_KHR)
+    {
+        printf("Error: Failed to create YUYV EGLImage\n");
+    }
 
-    GLuint yuyv_framebuffer = 0;
+    return img;
+}
 
-    /* Get address of function eglCreateImageKHR */
-    eglCreateImageKHR = (EGLCREATEIMAGEKHR)
-                        eglGetProcAddress("eglCreateImageKHR");
-    assert(eglCreateImageKHR != NULL);
+EGLImageKHR * egl_create_yuyv_images(EGLDisplay display,
+                                     uint32_t img_width, uint32_t img_height,
+                                     v4l2_dmabuf_exp_t * p_bufs, uint32_t cnt)
+{
+    EGLImageKHR * p_imgs = NULL;
+    uint32_t index = 0;
 
-    /* Get address of function eglDestroyImageKHR */
-    eglDestroyImageKHR = (EGLDESTROYIMAGEKHR)
-                         eglGetProcAddress("eglDestroyImageKHR");
-    assert(eglDestroyImageKHR != NULL);
+    /* Check parameters */
+    assert(display != EGL_NO_DISPLAY);
+    assert((img_width > 0) && (img_height > 0));
+    assert((p_bufs != NULL) && (cnt > 0));
 
-    /* Get address of function glEGLImageTargetTexture2DOES */
+    p_imgs = (EGLImageKHR *)malloc(cnt * sizeof(EGLImageKHR));
+
+    for (index = 0; index < cnt; index++)
+    {
+        p_imgs[index] = egl_create_yuyv_image(display,
+                                              img_width, img_height,
+                                              p_bufs[index].dmabuf_fd);
+        if (p_imgs[index] == EGL_NO_IMAGE_KHR)
+        {
+            break;
+        }
+    }
+
+    if (index < cnt)
+    {
+        egl_delete_images(display, p_imgs, index);
+        return NULL;
+    }
+
+    return p_imgs;
+}
+
+EGLImageKHR egl_create_nv12_image(EGLDisplay display,
+                                  uint32_t img_width, uint32_t img_height,
+                                  int y_dmabuf_fd, int uv_dmabuf_fd)
+{
+    EGLImageKHR img = EGL_NO_IMAGE_KHR;
+
+    /* Check parameters */
+    assert(display != EGL_NO_DISPLAY);
+    assert((img_width > 0) && (img_height > 0));
+    assert((y_dmabuf_fd > 0) && (uv_dmabuf_fd > 0));
+
+    EGLint img_attribs[] =
+    {
+        /* The logical dimensions of NV12 buffer in pixels */
+        EGL_WIDTH, img_width,
+        EGL_HEIGHT, img_height,
+
+        /* Pixel format of the buffer, as specified by 'drm_fourcc.h' */
+        EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
+
+        EGL_DMA_BUF_PLANE0_FD_EXT, y_dmabuf_fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, img_width,
+
+        /* These attribute-value pairs are necessary because NV12 contains 2
+         * planes: plane 0 is for Y values and plane 1 is for chroma values */
+        EGL_DMA_BUF_PLANE1_FD_EXT, uv_dmabuf_fd,
+        EGL_DMA_BUF_PLANE1_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE1_PITCH_EXT, img_width,
+
+        /* Y, U, and V color range from [0, 255] */
+        EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT,
+
+        /* The chroma plane are sub-sampled in both horizontal and vertical
+         * dimensions, by a factor of 2 */
+        EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
+        EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,
+                                                EGL_YUV_CHROMA_SITING_0_5_EXT,
+        EGL_NONE,
+    };
+
+    /* Create EGLImage from a Linux dmabuf file descriptor */
+    img = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                            (EGLClientBuffer)NULL, img_attribs);
+    if (img == EGL_NO_IMAGE_KHR)
+    {
+        printf("Error: Failed to create NV12 EGLImage\n");
+    }
+
+    return img;
+}
+
+EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
+                                     uint32_t img_width, uint32_t img_height,
+                                     mmngr_buf_t * p_bufs, uint32_t count)
+{
+    EGLImageKHR * p_imgs = NULL;
+
+    uint32_t index = 0;
+    mmngr_dmabuf_exp_t * p_dmabufs = NULL;
+
+    /* Check parameters */
+    assert(display != EGL_NO_DISPLAY);
+    assert((img_width > 0) && (img_height > 0));
+    assert((p_bufs != NULL) && (count > 0));
+
+    p_imgs = (EGLImageKHR *)malloc(count * sizeof(EGLImageKHR));
+
+    for (index = 0; index < count; index++)
+    {
+        p_dmabufs = p_bufs[index].p_dmabufs;
+
+        p_imgs[index] = egl_create_nv12_image(display,
+                                              img_width, img_height,
+                                              p_dmabufs[0].dmabuf_fd,
+                                              p_dmabufs[1].dmabuf_fd);
+        if (p_imgs[index] == EGL_NO_IMAGE_KHR)
+        {
+            break;
+        }
+    }
+
+    if (index < count)
+    {
+        egl_delete_images(display, p_imgs, index);
+        return NULL;
+    }
+
+    return p_imgs;
+}
+
+void egl_delete_images(EGLDisplay display,
+                       EGLImageKHR * p_imgs, uint32_t count)
+{
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert((display != EGL_NO_DISPLAY) && (p_imgs != NULL));
+
+    for (index = 0; index < count; index++)
+    {
+        eglDestroyImageKHR(display, p_imgs[index]);
+    }
+
+    /* Free entire array */
+    free(p_imgs);
+}
+
+/******************************* FOR OPENGL ES ********************************/
+
+GLuint gl_create_shader(const char * p_file, GLenum type)
+{
+    GLuint shader = 0;
+    char * p_shader_src = NULL;
+
+    GLint log_len = 0;
+    char * p_log  = NULL;
+
+    GLint b_compile_ok = GL_FALSE;
+
+    /* Check parameter */
+    assert(p_file != NULL);
+
+    p_shader_src = file_read_str(p_file);
+    if (p_shader_src == NULL)
+    {
+        printf("Error: Failed to open '%s'\n", p_file);
+        return 0;
+    }
+
+    /* Create an empty shader object */
+    shader = glCreateShader(type);
+    if (shader == 0)
+    {
+        printf("Error: Failed to create shader object\n");
+        return 0;
+    }
+
+    /* Copy source code into the shader object */
+    glShaderSource(shader, 1, (const GLchar **)&p_shader_src, NULL);
+    free(p_shader_src);
+
+    /* Compile the source code strings that was stored in the shader object */
+    glCompileShader(shader);
+
+    /* Get status of the last compile operation on the shader object */
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &b_compile_ok);
+    if (b_compile_ok == GL_FALSE)
+    {
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
+        p_log = (char *)malloc(log_len);
+
+        /* Get the compile error of the shader object */
+        glGetShaderInfoLog(shader, log_len, NULL, p_log);
+        printf("Error: Failed to compile shader:\n%s\n", p_log);
+        free(p_log);
+
+        glDeleteShader(shader);
+        return 0;
+    }
+
+  return shader;
+}
+
+GLuint gl_create_prog_from_objs(GLuint vs_object, GLuint fs_object)
+{
+    GLuint program = 0;
+
+    GLint log_len = 0;
+    char * p_log  = NULL;
+
+    GLint b_link_ok = GL_FALSE;
+
+    /* Check parameters */
+    assert((vs_object != 0) && (fs_object != 0));
+
+    /* Create an empty program object */
+    program = glCreateProgram();
+    if (program == 0)
+    {
+        printf("Error: Failed to create program object\n");
+        return 0;
+    }
+
+    /* Attach the shader object to the program object */
+    glAttachShader(program, vs_object);
+    glAttachShader(program, fs_object);
+
+    /* Link the program object */
+    glLinkProgram(program);
+
+    /* Get status of the last link operation on program object */
+    glGetProgramiv(program, GL_LINK_STATUS, &b_link_ok);
+    if (b_link_ok == GL_FALSE)
+    {
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
+        p_log = (char *)malloc(log_len);
+
+        /* Get the link error of the program object */
+        glGetProgramInfoLog(program, log_len, NULL, p_log);
+        printf("Error: Failed to link program:\n%s\n", p_log);
+        free(p_log);
+
+        glDeleteProgram(program);
+        return 0;
+    }
+
+    return program;
+}
+
+GLuint gl_create_prog_from_src(const char * p_vs_file, const char * p_fs_file)
+{
+    GLuint vs_object   = 0;
+    GLuint fs_object   = 0;
+    GLuint prog_object = 0;
+
+    /* Check parameters */
+    assert((p_vs_file != NULL) && (p_fs_file != NULL));
+
+    /* Create and compile vertex shader object */
+    vs_object = gl_create_shader(p_vs_file, GL_VERTEX_SHADER);
+
+    /* Create and compile fragment shader object */
+    fs_object = gl_create_shader(p_fs_file, GL_FRAGMENT_SHADER);
+
+    /* Create program object and
+     * link vertex shader object and fragment shader object to it */
+    prog_object = gl_create_prog_from_objs(vs_object, fs_object);
+
+    /* The vertex shader object and fragment shader object are not needed
+     * after creating program. So, it should be deleted */
+    glDeleteShader(vs_object);
+    glDeleteShader(fs_object);
+
+    return prog_object;
+}
+
+bool gl_is_ext_supported(const char * p_name)
+{
+    const char * p_ext_funcs = NULL;
+
+    /* Check parameter */
+    assert(p_name != NULL);
+
+    /* A non-NULL return value from 'eglGetProcAddress' does not
+     * guarantee that an extension function is supported at runtime.
+     *
+     * For OpenGL ES extension functions, the program must also make
+     * a corresponding query 'glGetString' to determine if a function is
+     * supported by a specific client API context */
+    p_ext_funcs = (const char *)glGetString(GL_EXTENSIONS);
+    if (p_ext_funcs == NULL)
+    {
+        printf("Error: Failed to get OpenGL ES extensions\n");
+        return false;
+    }
+
+    /* Find extension 'p_name' in 'p_ext_funcs' */
+    if (str_find_whole_str(p_ext_funcs, " ", p_name) == false)
+    {
+        printf("Error: Extension '%s' does not exist\n", p_name);
+        return false;
+    }
+
+    return true;
+}
+
+bool gl_init_ext_funcs()
+{
+    /* Get address of function 'glEGLImageTargetTexture2DOES' */
     glEGLImageTargetTexture2DOES = (GLEGLIMAGETARGETTEXTURE2DOES)
-                        eglGetProcAddress("glEGLImageTargetTexture2DOES");
-    assert(glEGLImageTargetTexture2DOES != NULL);
+                            eglGetProcAddress("glEGLImageTargetTexture2DOES");
 
-    /* Create EGLImage from a Linux dmabuf file descriptor
-     * Note: https://registry.khronos.org/EGL/extensions/EXT/
-     *                       EGL_EXT_image_dma_buf_import.txt */
-    yuyv_eglimage = eglCreateImageKHR(egl_display, EGL_NO_CONTEXT,
-                                      EGL_LINUX_DMA_BUF_EXT,
-                                      (EGLClientBuffer)NULL,
-                                      yuyv_eglimage_attribs);
-    assert(yuyv_eglimage != EGL_NO_IMAGE_KHR);
+    if ((glEGLImageTargetTexture2DOES == NULL) ||
+        !gl_is_ext_supported("GL_OES_EGL_image_external") ||
+        !gl_is_ext_supported("GL_OES_EGL_image_external_essl3") ||
+        !gl_is_ext_supported("GL_EXT_YUV_target"))
+    {
+        printf("Error: Failed to init OpenGL ES extension functions\n");
+        return false;
+    }
 
-    /* Create and bind framebuffer */
-    glGenFramebuffers(1, &yuyv_framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, yuyv_framebuffer);
+    return true;
+}
 
-    /* Create external texture since GL_TEXTURE_2D does not support YUYV */
-    glGenTextures(1, &yuyv_texture_id);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_texture_id);
+GLuint gl_create_texture(EGLImageKHR image)
+{
+    GLuint texture = 0;
+
+    /* Check parameter */
+    assert(image != EGL_NO_IMAGE_KHR);
+
+    /* Use external texture for special image layouts, such as: YUYV, NV12... */
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
 
     /* Min filter and mag filter should be set to GL_NEAREST.
      * The output quality may be affected if these are set to GL_LINEAR */
@@ -820,22 +2830,135 @@ int main(int argc, char ** pp_argv)
                     GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     /* Define texture from an existing EGLImage */
-    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, yuyv_eglimage);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, image);
 
-    /* Attach YUYV texture to the color buffer of currently bound framebuffer */
+    /* Unbind texture */
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    return texture;
+}
+
+GLuint * gl_create_textures(EGLImageKHR * p_images, uint32_t count)
+{
+    GLuint * p_textures = NULL;
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert((p_images != NULL) && (count > 0));
+
+    p_textures = (GLuint *)malloc(count * sizeof(GLuint));
+
+    for (index = 0; index < count; index++)
+    {
+        p_textures[index] = gl_create_texture(p_images[index]);
+        if (p_textures[index] == 0)
+        {
+            printf("Error: Failed to create texture at index '%d'\n", index);
+            break;
+        }
+    }
+
+    if (index < count)
+    {
+        gl_delete_textures(p_textures, index);
+        return NULL;
+    }
+
+    return p_textures;
+}
+
+void gl_delete_textures(GLuint * p_textures, uint32_t count)
+{
+    /* Check parameter */
+    assert(p_textures != NULL);
+
+    if (count > 0)
+    {
+        glDeleteTextures(count, p_textures);
+    }
+
+    /* Free entire array */
+    free(p_textures);
+}
+
+GLuint gl_create_framebuffer(GLuint texture)
+{
+    GLuint fb = 0;
+
+    /* Check parameter */
+    assert(texture != 0);
+
+    /* Create and bind framebuffer */
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+
+    /* Attach texture to the color buffer of currently bound framebuffer */
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_EXTERNAL_OES, yuyv_texture_id, 0);
-    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+                           GL_TEXTURE_EXTERNAL_OES, texture, 0);
 
-    /*******************************************
-     * Step 8: Draw the rectangle on YUYV data *
-     *******************************************/
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    {
+        printf("Error: Failed to attach texture to framebuffer\n");
+        glDeleteFramebuffers(1, &fb);
 
-    GLuint vertex_shader_object = 0;
-    GLuint fragment_shader_object = 0;
-    GLuint shape_rendering_prog = 0;
+        return 0;
+    }
 
-    /* Vertices of rectangle located in the middle of YUYV frame */
+    /* Unbind framebuffer */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    return fb;
+}
+
+GLuint * gl_create_framebuffers(GLuint * p_textures, uint32_t count)
+{
+    GLuint * p_fbs = NULL;
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert((p_textures != NULL) && (count > 0));
+
+    p_fbs = (GLuint *)malloc(count * sizeof(GLuint));
+
+    for (index = 0; index < count; index++)
+    {
+        p_fbs[index] = gl_create_framebuffer(p_textures[index]);
+        if (p_fbs[index] == 0)
+        {
+            break;
+        }
+    }
+
+    if (index < count)
+    {
+        gl_delete_framebuffers(p_fbs, index);
+        return NULL;
+    }
+
+    return p_fbs;
+}
+
+void gl_delete_framebuffers(GLuint * p_fbs, uint32_t count)
+{
+    /* Check parameter */
+    assert(p_fbs != NULL);
+
+    if (count > 0)
+    {
+        glDeleteFramebuffers(count, p_fbs);
+    }
+
+    /* Free entire array */
+    free(p_fbs);
+}
+
+gl_resources_t gl_create_resources()
+{
+    gl_resources_t res;
+
+    /* For drawing rectangle */
+
+    /* The positions and colors of rectangle */
     GLfloat rec_vertices[] =
     {
         /* Positions                      Colors */
@@ -852,210 +2975,7 @@ int main(int argc, char ** pp_argv)
         2, 3, 0,
     };
 
-    GLuint vbo_rec_vertices = 0;
-    GLuint ibo_rec_indices = 0;
-
-    /* Create and compile vertex shader object */
-    vertex_shader_object = shader_create("shape-rendering.vs.glsl",
-                                         GL_VERTEX_SHADER);
-    assert(vertex_shader_object != 0);
-
-    /* Create and compile fragment shader object */
-    fragment_shader_object = shader_create("shape-rendering.fs.glsl",
-                                           GL_FRAGMENT_SHADER);
-    assert(fragment_shader_object != 0);
-
-    /* Create program object and
-     * link vertex shader object and fragment shader object to it */
-    shape_rendering_prog = program_create(vertex_shader_object,
-                                          fragment_shader_object);
-    assert(shape_rendering_prog != 0);
-
-    /* The vertex shader object and fragmented shader object are not needed
-     * after creating program. So, it should be deleted */
-    glDeleteShader(vertex_shader_object);
-    glDeleteShader(fragment_shader_object);
-
-    glViewport(0, 0, YUYV_FRAME_WIDTH_IN_PIXELS, YUYV_FRAME_HEIGHT_IN_PIXELS);
-    glUseProgram(shape_rendering_prog);
-
-    /* Create vertex/index buffer objects and add data to it */
-    glGenBuffers(1, &vbo_rec_vertices);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_rec_vertices);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(rec_vertices), rec_vertices,
-                 GL_STATIC_DRAW);
-
-    glGenBuffers(1, &ibo_rec_indices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_rec_indices);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(rec_indices), rec_indices,
-                 GL_STATIC_DRAW);
-
-    /* Enable attribute 'aPos' since it's disabled by default */
-    glEnableVertexAttribArray(0);
-
-    /* Enable attribute 'aColor' since it's disabled by default */
-    glEnableVertexAttribArray(1);
-
-    /* Show OpenGL ES how the 'rec_vertices' should be interpreted */
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_rec_vertices);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
-                          5 * sizeof(GLfloat), (void *)0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                          5 * sizeof(GLfloat), (void *)(2 * sizeof(GLfloat)));
-
-    /* Draw the rectangle */
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_rec_indices);
-    glDrawElements(GL_TRIANGLES, sizeof(rec_indices) / sizeof(GLushort),
-                   GL_UNSIGNED_SHORT, 0);
-
-    /* Wait until 'glDrawElements' finishes */
-    glFinish();
-
-    /*******************************************************
-     * Step 9: Get YUYV data and rectangle embedded on it. *
-     *         Then write to a file                        *
-     *******************************************************/
-
-    file_write_buffer("out-yuyv-640x480-2.raw",
-                      p_yuyv_user_virt_addr, YUYV_FRAME_SIZE_IN_BYTES);
-
-    /**********************************************
-     * Step 10: Create DMA buffer for NV12 data   *
-     **********************************************/
-
-    MMNGR_ID nv12_mmngr_id = -1;
-    unsigned long nv12_phy_addr = 0;
-    unsigned long nv12_hard_addr = 0;
-    unsigned long nv12_user_virt_addr = 0;
-
-    int nv12_plane0_dmabuf_id = -1;
-    int nv12_plane0_dmabuf_fd = -1;
-
-    int nv12_plane1_dmabuf_id = -1;
-    int nv12_plane1_dmabuf_fd = -1;
-
-    int b_mmngr_alloc_ok = R_MM_OK;
-    int b_mmngr_export_ok = R_MM_OK;
-
-    /* Exit program if size of plane 0 of NV12 frame is not aligned to
-     * page size */
-    assert(page_size_is_size_aligned(NV12_PLANE0_SIZE_IN_BYTES));
-
-    /* Calculate dmabuf size of plane 1 of NV12 frame */
-    const size_t nv12_plane1_size =
-                          page_size_get_aligned_size(NV12_PLANE1_SIZE_IN_BYTES);
-
-    if (nv12_plane1_size != NV12_PLANE1_SIZE_IN_BYTES)
-    {
-        printf("Size of plane 1 of NV12 frame is not aligned to page size\n");
-    }
-
-    /* Allocate memory space */
-    b_mmngr_alloc_ok = mmngr_alloc_in_user(&nv12_mmngr_id,
-                                           NV12_PLANE0_SIZE_IN_BYTES +
-                                           nv12_plane1_size,
-                                           &nv12_phy_addr,
-                                           &nv12_hard_addr,
-                                           &nv12_user_virt_addr,
-                                           MMNGR_VA_SUPPORT);
-    assert(b_mmngr_alloc_ok == R_MM_OK);
-
-    /* For plane 0 which contains Y values:
-     * Allocate dmabuf's fd from the address and the address of memory space */
-    b_mmngr_export_ok = mmngr_export_start_in_user(&nv12_plane0_dmabuf_id,
-                                                   NV12_PLANE0_SIZE_IN_BYTES,
-                                                   nv12_hard_addr,
-                                                   &nv12_plane0_dmabuf_fd);
-    assert(b_mmngr_export_ok == R_MM_OK);
-
-    /* For plane 1 which contains U and V values:
-     * Allocate dmabuf's fd from the address and the address of memory space */
-    b_mmngr_export_ok = mmngr_export_start_in_user(&nv12_plane1_dmabuf_id,
-                                                   nv12_plane1_size,
-                                                   nv12_hard_addr +
-                                                   NV12_PLANE0_SIZE_IN_BYTES,
-                                                   &nv12_plane1_dmabuf_fd);
-    assert(b_mmngr_export_ok == R_MM_OK);
-
-    /**************************************************************************
-     * Step 11: Set up a place to hold NV12 data (after conversion from YUYV) *
-     **************************************************************************/
-
-    EGLint nv12_eglimage_attribs[] =
-    {
-        /* The logical dimensions of NV12 buffer in pixels */
-        EGL_WIDTH, NV12_FRAME_WIDTH_IN_PIXELS,
-        EGL_HEIGHT, NV12_FRAME_HEIGHT_IN_PIXELS,
-
-        /* Pixel format of the buffer, as specified by 'drm_fourcc.h' */
-        EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
-
-        EGL_DMA_BUF_PLANE0_FD_EXT, nv12_plane0_dmabuf_fd,
-        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, NV12_PLANE0_WIDTH_IN_PIXELS * 1/*byte*/,
-
-        /* These attribute-value pairs are necessary because NV12 contains 2
-         * planes: plane 0 is for Y values and plane 1 is for chroma values */
-        EGL_DMA_BUF_PLANE1_FD_EXT, nv12_plane1_dmabuf_fd,
-        EGL_DMA_BUF_PLANE1_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE1_PITCH_EXT, NV12_PLANE1_WIDTH_IN_PIXELS * 2/*bytes*/,
-
-        /* Y, U, and V color range from [0, 255] */
-        EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT,
-
-        /* The chroma plane are sub-sampled in both horizontal and vertical
-         * dimensions, by a factor of 2 */
-        EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
-        EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,
-                                                EGL_YUV_CHROMA_SITING_0_5_EXT,
-        EGL_NONE,
-    };
-
-    EGLImageKHR nv12_eglimage = EGL_NO_IMAGE_KHR;
-    GLuint nv12_texture_id = 0;
-
-    GLuint nv12_framebuffer = 0;
-
-    /* Create EGLImage from a Linux dmabuf file descriptor */
-    nv12_eglimage = eglCreateImageKHR(egl_display, EGL_NO_CONTEXT,
-                                      EGL_LINUX_DMA_BUF_EXT,
-                                      (EGLClientBuffer)NULL,
-                                      nv12_eglimage_attribs);
-    assert(nv12_eglimage != EGL_NO_IMAGE_KHR);
-
-    /* Create and bind framebuffer */
-    glGenFramebuffers(1, &nv12_framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, nv12_framebuffer);
-
-    /* Create external texture since GL_TEXTURE_2D does not support NV12 */
-    glGenTextures(1, &nv12_texture_id);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, nv12_texture_id);
-
-    /* Min filter and mag filter should be set to GL_NEAREST.
-     * The output quality may be affected if these are set to GL_LINEAR */
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    /* In GL_TEXTURE_EXTERNAL_OES, only GL_CLAMP_TO_EDGE is accepted as
-     * GL_TEXTURE_WRAP_S and GL_TEXTURE_WRAP_T */
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,
-                    GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,
-                    GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    /* Define texture from an existing EGLImage */
-    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, nv12_eglimage);
-
-    /* Attach NV12 texture to the color buffer of currently bound framebuffer */
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_EXTERNAL_OES, nv12_texture_id, 0);
-    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-
-    /*********************************
-     * Step 12: Convert YUYV to NV12 *
-     *********************************/
-
-    GLuint yuyv_to_nv12_conv_prog = 0;
+    /* For YUYV-to-NV12 conversion */
 
     /* No zooming in/out and convert entire YUYV texture */
     GLfloat canvas_vertices[] =
@@ -1074,48 +2994,110 @@ int main(int argc, char ** pp_argv)
         2, 3, 0,
     };
 
-    GLuint vbo_canvas_vertices = 0;
-    GLuint ibo_canvas_indices = 0;
-    GLint uniform_yuyv_texture = -1;
+    /* Create program object for rendering rectangle */
+    res.shape_prog = gl_create_prog_from_src("shape-rendering.vs.glsl",
+                                             "shape-rendering.fs.glsl");
 
-    /* Create and compile vertex shader object */
-    vertex_shader_object = shader_create("yuyv-to-nv12-conv.vs.glsl",
-                                         GL_VERTEX_SHADER);
-    assert(vertex_shader_object != 0);
-
-    /* Create and compile fragment shader object */
-    fragment_shader_object = shader_create("yuyv-to-nv12-conv.fs.glsl",
-                                           GL_FRAGMENT_SHADER);
-    assert(fragment_shader_object != 0);
-
-    /* Create program object and
-     * link vertex shader object and fragment shader object to it */
-    yuyv_to_nv12_conv_prog = program_create(vertex_shader_object,
-                                            fragment_shader_object);
-    assert(yuyv_to_nv12_conv_prog != 0);
-
-    /* The vertex shader object and fragmented shader object are not needed
-     * after creating program. So, it should be deleted */
-    glDeleteShader(vertex_shader_object);
-    glDeleteShader(fragment_shader_object);
-
-    glUseProgram(yuyv_to_nv12_conv_prog);
+    /* Create program object for converting YUYV to NV12 */
+    res.conv_prog = gl_create_prog_from_src("yuyv-to-nv12-conv.vs.glsl",
+                                            "yuyv-to-nv12-conv.fs.glsl");
 
     /* Get variable 'yuyvTexture' from fragment shader */
-    uniform_yuyv_texture = glGetUniformLocation(yuyv_to_nv12_conv_prog,
-                                                "yuyvTexture");
-    assert(uniform_yuyv_texture != -1);
+    res.uniform_yuyv_texture = glGetUniformLocation(res.conv_prog,
+                                                    "yuyvTexture");
 
-    /* Create vertex buffer objects and add data to these objects */
-    glGenBuffers(1, &vbo_canvas_vertices);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_canvas_vertices);
+    /* Create vertex/index buffer objects and add data to it */
+    glGenBuffers(1, &(res.vbo_rec_vertices));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_vertices);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(rec_vertices), rec_vertices,
+                 GL_STATIC_DRAW);
+
+    glGenBuffers(1, &(res.ibo_rec_indices));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_rec_indices);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(rec_indices), rec_indices,
+                 GL_STATIC_DRAW);
+
+    glGenBuffers(1, &(res.vbo_canvas_vertices));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_vertices);
     glBufferData(GL_ARRAY_BUFFER, sizeof(canvas_vertices), canvas_vertices,
                  GL_STATIC_DRAW);
 
-    glGenBuffers(1, &ibo_canvas_indices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_canvas_indices);
+    glGenBuffers(1, &(res.ibo_canvas_indices));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(canvas_indices),
                  canvas_indices, GL_STATIC_DRAW);
+
+    /* Unbind buffers */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    return res;
+}
+
+void gl_delete_resources(gl_resources_t res)
+{
+    /* Delete vertex buffer objects */
+    glDeleteBuffers(1, &(res.vbo_rec_vertices));
+    glDeleteBuffers(1, &(res.vbo_canvas_vertices));
+
+    /* Delete index buffer objects */
+    glDeleteBuffers(1, &(res.ibo_rec_indices));
+    glDeleteBuffers(1, &(res.ibo_canvas_indices));
+
+    /* Delete program objects */
+    glDeleteProgram(res.shape_prog);
+    glDeleteProgram(res.conv_prog);
+}
+
+void gl_draw_rectangle(gl_resources_t res)
+{
+    GLint tmp_size = 0;
+
+    /* Use program object for drawing rectangle */
+    glUseProgram(res.shape_prog);
+
+    /* Enable attribute 'aPos' since it's disabled by default */
+    glEnableVertexAttribArray(0);
+
+    /* Enable attribute 'aColor' since it's disabled by default */
+    glEnableVertexAttribArray(1);
+
+    /* Show OpenGL ES how the 'vbo_rec_vertices' should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_vertices);
+
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(GLfloat), (void *)0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(GLfloat), (void *)(2 * sizeof(GLfloat)));
+
+    /* Draw rectangle */
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_rec_indices);
+    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_size);
+
+    glDrawElements(GL_TRIANGLES,
+                   tmp_size / sizeof(GLushort), GL_UNSIGNED_SHORT, 0);
+
+    /* Wait until 'glDrawElements' finishes */
+    glFinish();
+
+    /* Unbind buffers */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    /* Disable attributes */
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+}
+
+void gl_conv_yuyv_to_nv12(GLuint yuyv_texture, gl_resources_t res)
+{
+    GLint tmp_size = 0;
+
+    /* Check parameter */
+    assert(yuyv_texture != 0);
+
+    /* Use program object for YUYV-to-NV12 conversion */
+    glUseProgram(res.conv_prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -1123,469 +3105,207 @@ int main(int argc, char ** pp_argv)
     /* Enable attribute 'aYuyvTexCoord' since it's disabled by default */
     glEnableVertexAttribArray(1);
 
-    /* Show OpenGL ES how the 'canvas_vertices' should be interpreted */
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_canvas_vertices);
+    /* Show OpenGL ES how the 'vbo_canvas_vertices' should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_vertices);
+
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
                           4 * sizeof(GLfloat), (void*)0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
                           4 * sizeof(GLfloat), (void*)(2 * sizeof(GLfloat)));
 
-    /* Tell OpenGL sampler 'yuyvTexture' belongs to texture unit 0 */
-    glUniform1i(uniform_yuyv_texture, 0);
-
     /* Bind the YUYV texture to texture unit 0 */
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_texture_id);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_texture);
 
-    /* Draw the rectangle */
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_canvas_indices);
-    glDrawElements(GL_TRIANGLES, sizeof(canvas_indices) / sizeof(GLushort),
-                   GL_UNSIGNED_SHORT, 0);
+    /* Tell OpenGL sampler 'yuyvTexture' belongs to texture unit 0 */
+    glUniform1i(res.uniform_yuyv_texture, /*GL_TEXTURE*/0);
+
+    /* Convert YUYV texture to NV12 texture */
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
+    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_size);
+
+    glDrawElements(GL_TRIANGLES,
+                   tmp_size / sizeof(GLushort), GL_UNSIGNED_SHORT, 0);
 
     /* Wait until 'glDrawElements' finishes */
     glFinish();
 
-    /**************************************
-     * Step 13: Write NV12 data to a file *
-     **************************************/
-
-    file_write_buffer("out-nv12-640x480.raw",
-                      (char *)nv12_user_virt_addr, NV12_FRAME_SIZE_IN_BYTES);
-
-    /*******************************************
-     * Step 14: Encode NV12 data to H.264 data *
-     *******************************************/
-
-    shared_data_t shared_data;
-
-    OMX_PARAM_COMPONENTROLETYPE video_enc_role;
-    OMX_VIDEO_PARAM_BITRATETYPE video_bitrate_type;
-
-    OMX_VIDEO_PORTDEFINITIONTYPE * p_video_port_def = NULL;
-
-    OMX_BUFFERHEADERTYPE ** pp_dummy_in_bufs = NULL;
-    mmngr_buf_t * p_mmngr_bufs = NULL;
-
-    OMX_ERRORTYPE omx_error = OMX_ErrorNone;
-    OMX_CALLBACKTYPE callbacks =
-    {
-        .EventHandler       = omx_event_handler,
-        .EmptyBufferDone    = omx_empty_buffer_done,
-        .FillBufferDone     = omx_fill_buffer_done
-    };
-
-    /* Initialize semaphore structures with initial value 0.
-     * Note: They are to be shared between threads of this process */
-    sem_init(&(shared_data.sem_event_idle), 0, 0);
-    sem_init(&(shared_data.sem_event_exec), 0, 0);
-
-    sem_init(&(shared_data.sem_h264_hdr_done), 0, 0);
-    sem_init(&(shared_data.sem_h264_data_done), 0, 0);
-
-    /* Open file for writing H.264 data */
-    shared_data.p_h264_fd = fopen("out-h264-640x480.264", "w");
-
-    /* Initialize OMX IL core */
-    omx_error = OMX_Init();
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Locate Renesas's H.264 encoder */
-    omx_error = OMX_GetHandle(&(shared_data.video_enc_handle),
-                              RENESAS_VIDEO_ENCODER_NAME,
-                              (OMX_PTR)&shared_data, &callbacks);
-    /* If successful, the component will be in state LOADED */
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Optional: Check role of the component */
-    OMX_INIT_STRUCTURE(&video_enc_role);
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamStandardComponentRole,
-                                 &video_enc_role);
-    assert(omx_error == OMX_ErrorNone);
-
-    printf("Role of video encoder: %s\n", video_enc_role.cRole);
-
-    /**********************************************
-     * Step 15.1: Configure input port definition *
-     **********************************************/
-
-    /* Get input port */
-    OMX_INIT_STRUCTURE(&(shared_data.in_port));
-    shared_data.in_port.nPortIndex = 0; /* Index 0 is for input port */
-
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.in_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Configure and set new parameters to input port */
-    p_video_port_def = &(shared_data.in_port.format.video);
-    p_video_port_def->nFrameWidth   = OMX_INPUT_FRAME_WIDTH;
-    p_video_port_def->nFrameHeight  = OMX_INPUT_FRAME_HEIGHT;
-    p_video_port_def->xFramerate    = OMX_INPUT_FRAME_RATE << 16; /*Q16 format*/
-    p_video_port_def->nStride       = OMX_INPUT_STRIDE;
-    p_video_port_def->nSliceHeight  = OMX_INPUT_SLICE_HEIGHT;
-    p_video_port_def->eColorFormat  = OMX_INPUT_COLOR_FORMAT;
-
-    omx_error = OMX_SetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.in_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Update input port */
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.in_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /***********************************************
-     * Step 15.2: Configure output port definition *
-     ***********************************************/
-
-    /* Get output port */
-    OMX_INIT_STRUCTURE(&(shared_data.out_port));
-    shared_data.out_port.nPortIndex = 1; /* Index 1 is for output port */
-
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.out_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Configure and set new parameters to output port */
-    p_video_port_def = &(shared_data.out_port.format.video);
-    p_video_port_def->nBitrate = OMX_OUTPUT_BIT_RATE;
-    p_video_port_def->eCompressionFormat = OMX_OUTPUT_COMPRESSION_FORMAT;
-
-    omx_error = OMX_SetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.out_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Update output port */
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamPortDefinition,
-                                 &(shared_data.out_port));
-    assert(omx_error == OMX_ErrorNone);
-
-    /****************************************************
-     * Step 15.3: Set constant bit rate for output port *
-     ****************************************************/
-
-    OMX_INIT_STRUCTURE(&video_bitrate_type);
-    video_bitrate_type.nPortIndex = shared_data.out_port.nPortIndex;
-
-    omx_error = OMX_GetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamVideoBitrate,
-                                 &video_bitrate_type);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Configure bit rate control types.
-     *
-     * Note: We do not need to set 'nTargetBitrate' since we already
-     * set 'nBitrate' of output port */
-    video_bitrate_type.eControlRate = OMX_Video_ControlRateConstant;
-
-    omx_error = OMX_SetParameter(shared_data.video_enc_handle,
-                                 OMX_IndexParamVideoBitrate,
-                                 &video_bitrate_type);
-    assert(omx_error == OMX_ErrorNone);
-
-    /*********************************************************
-     * Step 15.4: Use buffer 'nv12_hard_addr' for input port *
-     *********************************************************/
-
-    /* Transition into state IDLE.
-     * This state indicates that the component has all needed static resources,
-     * but it's not processing data */
-    omx_error = OMX_SendCommand(shared_data.video_enc_handle,
-                                OMX_CommandStateSet, OMX_StateIdle, NULL);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* See section 2.2.9 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf'
-     * and section 4.1.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
-    omx_error = OMX_UseBuffer(shared_data.video_enc_handle,
-                              &(shared_data.p_in_buf),
-                              shared_data.in_port.nPortIndex,
-                              NULL,
-                              shared_data.in_port.nBufferSize,
-                              (OMX_U8 *)nv12_hard_addr);
-
-    /* See 'Table 6-3' in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
-    assert(shared_data.in_port.nBufferSize == NV12_FRAME_SIZE_IN_BYTES);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Create dummy buffers for input port */
-    const OMX_U32 in_bufs_size = shared_data.in_port.nBufferCountActual;
-    if (in_bufs_size > 1)
-    {
-        /* The first buffer is already taken care of by 'OMX_UseBuffer' */
-        pp_dummy_in_bufs = (OMX_BUFFERHEADERTYPE **)malloc((in_bufs_size - 1) *
-                                                sizeof(OMX_BUFFERHEADERTYPE *));
-
-        p_mmngr_bufs = (mmngr_buf_t *)malloc((in_bufs_size - 1) *
-                                             sizeof(mmngr_buf_t));
-
-        for (int i = 0; i < in_bufs_size - 1; i++)
-        {
-            b_mmngr_alloc_ok = mmngr_alloc_in_user(
-                                   &(p_mmngr_bufs[i].mmngr_id),
-                                   shared_data.in_port.nBufferSize,
-                                   &(p_mmngr_bufs[i].phy_addr),
-                                   &(p_mmngr_bufs[i].hard_addr),
-                                   &(p_mmngr_bufs[i].user_virt_addr),
-                                   MMNGR_VA_SUPPORT);
-            assert(b_mmngr_alloc_ok == R_MM_OK);
-
-            omx_error = OMX_UseBuffer(shared_data.video_enc_handle,
-                                      &(pp_dummy_in_bufs[i]),
-                                      shared_data.in_port.nPortIndex,
-                                      NULL,
-                                      shared_data.in_port.nBufferSize,
-                                      (OMX_U8 *)p_mmngr_bufs[i].hard_addr);
-            assert(omx_error == OMX_ErrorNone);
-        }
-    }
-
-    /***********************************************
-     * Step 15.5: Allocate buffers for output port *
-     ***********************************************/
-
-    const OMX_U32 out_bufs_size = shared_data.out_port.nBufferCountActual;
-    shared_data.pp_out_bufs = (OMX_BUFFERHEADERTYPE **)malloc(out_bufs_size *
-                                                sizeof(OMX_BUFFERHEADERTYPE *));
-
-    for (int i = 0; i < out_bufs_size; i++)
-    {
-        /* See section 2.2.10 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf'
-         * and 'Table 6-3' in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
-        omx_error = OMX_AllocateBuffer(shared_data.video_enc_handle,
-                                       &(shared_data.pp_out_bufs[i]),
-                                       shared_data.out_port.nPortIndex,
-                                       NULL,
-                                       shared_data.out_port.nBufferSize);
-        assert(omx_error == OMX_ErrorNone);
-    }
-
-    /* We must allocate all necessary buffers for input port before the
-     * component is in state IDLE.
-     *
-     * The number of buffers is defined in
-     * 'OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountActual'.
-     * However, it can be set to a lower value, but not less than
-     * 'OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountMin'.
-     *
-     * But, in most case, 'nBufferCountMin' is often greater than 1 and
-     * equal to 'nBufferCountActual' */
-    sem_wait(&(shared_data.sem_event_idle));
-
-    /* Transition into state EXECUTING.
-     *
-     * This state indicates that the component is pending reception of buffers
-     * to process data and will make required callbacks
-     * (see section 3.1.2.9 'OMX_CALLBACKTYPE' in OMX IL specification 1.1.2) */
-    omx_error = OMX_SendCommand(shared_data.video_enc_handle,
-                                OMX_CommandStateSet, OMX_StateExecuting, NULL);
-    assert(omx_error == OMX_ErrorNone);
-    sem_wait(&(shared_data.sem_event_exec));
-
-    /*******************************************
-     * Step 15.6: Send NV12 data to input port *
-     *******************************************/
-
-    /* Send buffer 'p_in_buf' to the input port of the component.
-     * If the buffer contains data, 'p_in_buf->nFilledLen' will not be zero.
-     *
-     * TODO: Buffer 'p_in_buf' should have a flag so that we can know
-     * whether it's okay to pass it to 'OMX_EmptyThisBuffer'
-     * (see section 2.2.12 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf')
-     *
-     * Note: 'p_in_buf->nFilledLen' is set to 0 when callback
-     * 'OMX_CALLBACKTYPE::EmptyBufferDone' is returned */
-    (shared_data.p_in_buf)->nFilledLen = shared_data.in_port.nBufferSize;
-
-    omx_error = OMX_EmptyThisBuffer(shared_data.video_enc_handle,
-                                    shared_data.p_in_buf);
-    assert(omx_error == OMX_ErrorNone);
-
-    /**************************************************
-     * Step 15.7: Receive H.264 data from output port *
-     **************************************************/
-
-    assert(shared_data.out_port.nBufferCountActual > 1);
-
-    /* Send buffer 'pp_out_bufs[0]' to the output port of the component.
-     * It will contain SPS NAL and PPS NAL.
-     *
-     * If 'pp_out_bufs[0]->nOutputPortIndex' is not a valid output port,
-     * the component returns 'OMX_ErrorBadPortIndex'.
-     *
-     * TODO: Each buffer in 'pp_out_bufs' should have a flag so that we can
-     * know whether it's okay to pass these to 'OMX_FillThisBuffer'
-     * (see section 2.2.13 in document 'R01USxxxxEJxxxx_cmn_v1.0.pdf') */
-
-    omx_error = OMX_FillThisBuffer(shared_data.video_enc_handle,
-                                   shared_data.pp_out_bufs[0]);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Send buffer 'pp_out_bufs[1]' to the output port of the component.
-     * It will contain Data NAL */
-    omx_error = OMX_FillThisBuffer(shared_data.video_enc_handle,
-                                   shared_data.pp_out_bufs[1]);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Wait until the component fills data to 'pp_out_bufs[0]' and
-     * 'pp_out_bufs[1]' (see callback 'FillBufferDone').
-     *
-     * TODOs: Should create 2 threads, one is for sending NV12 frames to
-     * input port and one is for requesting H.264 data from output port.
-     *
-     * Warning: We should pay attention for errors listed in 'Table 7-1'
-     * (document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf') when handling data */
-    sem_wait(&(shared_data.sem_h264_hdr_done));
-    sem_wait(&(shared_data.sem_h264_data_done));
-
-    /************************************
-     * Step 16: Cleanup OMX's resources *
-     ************************************/
-
-    /* Close file which stores H.264 data */
-    fclose(shared_data.p_h264_fd);
-
-    /* Transition into state IDLE */
-    omx_error = OMX_SendCommand(shared_data.video_enc_handle,
-                                OMX_CommandStateSet, OMX_StateIdle, NULL);
-    assert(omx_error == OMX_ErrorNone);
-    sem_wait(&(shared_data.sem_event_idle));
-
-    /* Transition into state LOADED */
-    omx_error = OMX_SendCommand(shared_data.video_enc_handle,
-                                OMX_CommandStateSet, OMX_StateLoaded, NULL);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Release buffers and buffer headers from the component
-     *
-     * The component shall free only the buffer headers if it allocated only
-     * the buffer headers ('OMX_UseBuffer').
-     *
-     * The component shall free both the buffers and the buffer headers
-     * if it allocated both the buffers and buffer headers
-     * ('OMX_AllocateBuffer') */
-    omx_error = OMX_FreeBuffer(shared_data.video_enc_handle,
-                               shared_data.in_port.nPortIndex,
-                               shared_data.p_in_buf);
-    assert(omx_error == OMX_ErrorNone);
-
-    if (shared_data.in_port.nBufferCountActual > 1)
-    {
-        for (int i = 0; i < shared_data.in_port.nBufferCountActual - 1; i++)
-        {
-            mmngr_free_in_user(p_mmngr_bufs[i].mmngr_id);
-
-            omx_error = OMX_FreeBuffer(shared_data.video_enc_handle,
-                                       shared_data.in_port.nPortIndex,
-                                       pp_dummy_in_bufs[i]);
-            assert(omx_error == OMX_ErrorNone);
-        }
-
-        free((void *)p_mmngr_bufs);
-        free((void *)pp_dummy_in_bufs);
-    }
-
-    for (int i = 0; i < shared_data.out_port.nBufferCountActual; i++)
-    {
-        omx_error = OMX_FreeBuffer(shared_data.video_enc_handle,
-                                   shared_data.out_port.nPortIndex,
-                                   shared_data.pp_out_bufs[i]);
-        assert(omx_error == OMX_ErrorNone);
-    }
-    free((void*)(shared_data.pp_out_bufs));
-
-    /* TODO: Should have a semaphore for state LOADED */
-    omx_wait_state(shared_data.video_enc_handle, OMX_StateLoaded);
-
-    /* Free the component's handle */
-    omx_error = OMX_FreeHandle(shared_data.video_enc_handle);
-    assert(omx_error == OMX_ErrorNone);
-
-    /* De-initialize OMX IL core */
-    omx_error = OMX_Deinit();
-    assert(omx_error == OMX_ErrorNone);
-
-    /* Destroy semaphore structures */
-    sem_destroy(&(shared_data.sem_event_idle));
-    sem_destroy(&(shared_data.sem_event_exec));
-
-    sem_destroy(&(shared_data.sem_h264_hdr_done));
-    sem_destroy(&(shared_data.sem_h264_data_done));
-
-    /*******************************************
-     * Step 17: Cleanup OpenGL ES's resources  *
-     *******************************************/
-
-    /* Cleanup vertex buffer objects */
-    glDeleteBuffers(1, &vbo_canvas_vertices);
-    glDeleteBuffers(1, &ibo_canvas_indices);
-
-    /* Cleanup program object */
-    glDeleteProgram(yuyv_to_nv12_conv_prog);
-
-    /* Cleanup framebuffer and texture of NV12 */
-    eglDestroyImageKHR(egl_display, nv12_eglimage);
-    glDeleteTextures(1, &nv12_texture_id);
-    glDeleteFramebuffers(1, &nv12_framebuffer);
-
-    /* Cleanup mmngr's id and dmabuf's id of plane 1 of NV12 */
-    mmngr_export_end_in_user(nv12_plane1_dmabuf_id);
-
-    /* Cleanup mmngr's id and dmabuf's id of plane 0 of NV12 */
-    mmngr_export_end_in_user(nv12_plane0_dmabuf_id);
-
-    /* Cleanup memory space of NV12 */
-    mmngr_free_in_user(nv12_mmngr_id);
-
-    /* Cleanup vertex buffer objects */
-    glDeleteBuffers(1, &vbo_rec_vertices);
-    glDeleteBuffers(1, &ibo_rec_indices);
-
-    /* Cleanup program object */
-    glDeleteProgram(shape_rendering_prog);
-
-    /* Cleanup framebuffer and texture of YUYV */
-    eglDestroyImageKHR(egl_display, yuyv_eglimage);
-    glDeleteTextures(1, &yuyv_texture_id);
-    glDeleteFramebuffers(1, &yuyv_framebuffer);
-
-    /* Cleanup EGL display, surface, and context */
-    eglMakeCurrent(egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    eglDestroyContext(egl_display, egl_context);
-    eglTerminate(egl_display);
-
-    egl_display = EGL_NO_DISPLAY;
-    egl_context = EGL_NO_CONTEXT;
-
-    /*************************************
-     * Step 18: Cleanup V4L2's resources *
-     *************************************/
-
-    /* Close dmabuf of YUYV buffer.
-     *
-     * It is recommended to close a dmabuf file when it is no longer used
-     * to allow the associated memory to be reclaimed.
-     *
-     * Link: https://www.kernel.org/doc/html/v5.0/media/uapi/v4l/
-     *       vidioc-expbuf.html */
-    close(yuyv_dmabuf_fd);
-
-    /* Unmap pages of memory */
-    munmap(p_yuyv_user_virt_addr, YUYV_FRAME_SIZE_IN_BYTES);
-
-    /* Close the USB camera */
-    close(usb_cam_fd);
-
-    return 0;
+    /* Unbind texture */
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    /* Unbind buffers */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    /* Disable attributes */
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
 }
 
-/* Function definitions */
+/********************************* FOR MMNGR **********************************/
+
+mmngr_buf_t * mmngr_alloc_nv12_dmabufs(uint32_t count, size_t nv12_size)
+{
+    mmngr_buf_t * p_bufs = NULL;
+
+    int b_alloc_ok = R_MM_OK;
+
+    size_t plane0_size = 0;
+    size_t plane1_size = 0;
+
+    uint32_t index = 0;
+
+    /* Check parameters */
+    assert((count > 0) && (nv12_size > 0));
+
+    /* Get size of plane 0 and plane 1 of NV12 buffer */
+    plane0_size = (2.0f * nv12_size) / 3;
+    plane1_size = page_size_get_aligned_size((1.0f * nv12_size) / 3);
+
+    /* Exit if size of plane 0 is not aligned to page size */
+    if (!page_size_is_size_aligned(plane0_size))
+    {
+        printf("Error: Size of plane 0 is not aligned to page size\n");
+        return NULL;
+    }
+
+    /* Allocate array of struct 'mmngr_buf_t' */
+    p_bufs = (mmngr_buf_t *)malloc(count * sizeof(mmngr_buf_t));
+
+    for (index = 0; index < count; index++)
+    {
+        /* Allocate memory space */
+        b_alloc_ok = mmngr_alloc_in_user(&(p_bufs[index].mmngr_id),
+                                         plane0_size + plane1_size,
+                                         &(p_bufs[index].phy_addr),
+                                         &(p_bufs[index].hard_addr),
+                                         &(p_bufs[index].virt_addr),
+                                         MMNGR_VA_SUPPORT);
+
+        /* Maybe it's out of memory */
+        if (b_alloc_ok != R_MM_OK)
+        {
+            printf("Error: MMNGR failed to allocate memory space\n");
+            break;
+        }
+
+        /* Set buffer's size */
+        p_bufs[index].size = nv12_size;
+
+        /* Allocate array of 'mmngr_dmabuf_exp_t' */
+        p_bufs[index].count = 2;
+        p_bufs[index].p_dmabufs = (mmngr_dmabuf_exp_t *)
+                                  malloc(2 * sizeof(mmngr_dmabuf_exp_t));
+
+        /* Export dmabuf for plane 0 */
+        p_bufs[index].p_dmabufs[0].size = plane0_size;
+        p_bufs[index].p_dmabufs[0].p_virt_addr = (char *)
+                                                 p_bufs[index].virt_addr;
+
+        mmngr_export_start_in_user(&(p_bufs[index].p_dmabufs[0].dmabuf_id),
+                                   plane0_size,
+                                   p_bufs[index].hard_addr,
+                                   &(p_bufs[index].p_dmabufs[0].dmabuf_fd));
+
+        /* Export dmabuf for plane 1 */
+        p_bufs[index].p_dmabufs[1].size = (1.0f * nv12_size) / 3;
+        p_bufs[index].p_dmabufs[1].p_virt_addr = (char *)
+                                                 (p_bufs[index].virt_addr +
+                                                  plane0_size);
+
+        mmngr_export_start_in_user(&(p_bufs[index].p_dmabufs[1].dmabuf_id),
+                                   plane1_size,
+                                   p_bufs[index].hard_addr + plane0_size,
+                                   &(p_bufs[index].p_dmabufs[1].dmabuf_fd));
+    }
+
+    if (index < count)
+    {
+        mmngr_dealloc_nv12_dmabufs(p_bufs, index);
+        return NULL;
+    }
+
+    return p_bufs;
+}
+
+void mmngr_dealloc_nv12_dmabufs(mmngr_buf_t * p_bufs, uint32_t count)
+{
+    uint32_t index = 0;
+
+    /* Check parameter */
+    assert(p_bufs != NULL);
+
+    for (index = 0; index < count; index++)
+    {
+        /* Stop exporting dmabuf for plane 0 */
+        mmngr_export_end_in_user(p_bufs[index].p_dmabufs[0].dmabuf_id);
+
+        /* Stop exporting dmabuf for plane 1 */
+        mmngr_export_end_in_user(p_bufs[index].p_dmabufs[1].dmabuf_id);
+
+        /* Deallocate array of 'mmngr_dmabuf_exp_t' */
+        free(p_bufs[index].p_dmabufs);
+
+        /* Deallocate memory space */
+        mmngr_free_in_user(p_bufs[index].mmngr_id);
+    }
+
+    /* Deallocate array of struct 'mmngr_buf_t' */
+    free(p_bufs);
+}
+
+/****************************** FOR FILE ACCESS *******************************/
+
+char * file_read_str(const char * p_name)
+{
+    long size = -1;
+    char * p_content = NULL;
+
+    /* Check parameter */
+    assert(p_name != NULL);
+
+    /* Open file */
+    FILE * p_fd = fopen(p_name, "r");
+    if (p_fd != NULL)
+    {
+        /* Get file's size */
+        fseek(p_fd, 0, SEEK_END);
+        size = ftell(p_fd);
+        rewind(p_fd);
+
+        /* Prepare buffer to store file's content */
+        p_content = (char *)malloc(size + 1);
+        memset(p_content, 0, size + 1);
+
+        /* Read file's content and put it into buffer */
+        fread(p_content, 1, size, p_fd);
+        p_content[size] = '\0';
+
+        /* Close file */
+        fclose(p_fd);
+    }
+
+    return p_content;
+}
+
+void file_write_buffer(const char * p_name, const char * p_buffer, size_t size)
+{
+    /* Check parameters */
+    assert((p_name != NULL) && (p_buffer != NULL) && (size > 0));
+
+    /* Open file */
+    FILE * p_fd = fopen(p_name, "w");
+    if (p_fd != NULL)
+    {
+        /* Write content to the file */
+        fwrite(p_buffer, sizeof(char), size, p_fd);
+
+        /* Close file */
+        fclose(p_fd);
+    }
+}
+
+/***************************** FOR PAGE ALIGNMENT *****************************/
 
 size_t page_size_get_aligned_size(size_t size)
 {
@@ -1600,280 +3320,81 @@ bool page_size_is_size_aligned(size_t size)
     return (page_size_get_aligned_size(size) == size) ? true : false;
 }
 
-char * file_read_str(const char * p_filename)
-{
-    long file_size = -1;
+/***************************** FOR STRING SEARCH ******************************/
 
-    /* Open file */
-    FILE * p_fd = fopen(p_filename, "r");
-    if (p_fd == NULL)
+char * str_to_uppercase(char * p_str)
+{
+    int index = 0;
+
+    /* Check parameter */
+    assert(p_str != NULL);
+
+    for (index = 0; p_str[index] != '\0'; index++)
     {
-        return NULL;
+        /* If 'p_str[index]' is neither an 'unsigned char' value or 'EOF',
+         * the behavior of function 'toupper' is undefined.
+         *
+         * Therefore, 'p_str[index]' must be cast to 'unsigned char' */
+        p_str[index] = (char)toupper((unsigned char)p_str[index]);
     }
 
-    /* Get file's size */
-    fseek(p_fd, 0, SEEK_END);
-    file_size = ftell(p_fd);
-    rewind(p_fd);
-
-    /* Prepare buffer to store file's content */
-    char * p_file_content = (char *)malloc(file_size + 1);
-    memset(p_file_content, 0, file_size + 1);
-
-    /* Read file's content and put it into buffer */
-    fread(p_file_content, 1, file_size, p_fd);
-    p_file_content[file_size] = '\0';
-
-    /* Close file */
-    fclose(p_fd);
-
-    return p_file_content;
+    return p_str;
 }
 
-void file_write_buffer(const char * p_filename,
-                       const char * p_buffer, size_t size)
+bool str_find_whole_str(const char * p_str_arr,
+                        const char * p_delim_str, const char * p_str)
 {
-    /* Open file */
-    FILE * p_fd = fopen(p_filename, "w");
-    if (p_fd != NULL)
-    {
-        /* Write content to the file */
-        fwrite(p_buffer, sizeof(char), size, p_fd);
+    bool b_is_found = false;
 
-        /* Close file */
-        fclose(p_fd);
-    }
-}
+    char * p_tmp_str = NULL;
+    char * p_tmp_str_arr = NULL;
 
-GLuint shader_create(const char * p_filename, GLenum type)
-{
-    GLint b_compile_ok = GL_FALSE;
-    
-    GLint info_log_length = 0;
-    char * p_info_log = NULL;
+    char * p_save_str = NULL;
+    char * p_token_str = NULL;
 
-    const GLchar * p_shader_source = file_read_str(p_filename);
-    if (p_shader_source == NULL)
-    {
-        printf("Error opening file '%s'\n", p_filename);
-        return 0;
-    }
+    /* Check parameters */
+    assert((p_str_arr != NULL) && (p_delim_str != NULL) && (p_str != NULL));
 
-    /* Create an empty shader object */
-    GLuint shader_object = glCreateShader(type);
-    if (shader_object == 0)
-    {
-        printf("Function glCreateShader() failed\n");
-        return 0;
-    }
+    /* Copy contents of 'p_str' to 'p_tmp_str'.
+     * Note: This step is required for function 'str_to_uppercase' */
+    p_tmp_str = (char *)malloc(strlen(p_str) + 1);
+    strcpy(p_tmp_str, p_str);
 
-    /* Copy source code into the shader object */
-    glShaderSource(shader_object, 1, &p_shader_source, NULL);
-    free((void *)p_shader_source);
-    
-    /* Compile the source code strings that was stored in the shader object */
-    glCompileShader(shader_object);
+    /* Convert 'p_tmp_str' to upper case for string comparison */
+    str_to_uppercase(p_tmp_str);
 
-    /* Get status of the last compile operation on the shader object */
-    glGetShaderiv(shader_object, GL_COMPILE_STATUS, &b_compile_ok);
-    if (b_compile_ok == GL_FALSE)
-    {
-        glGetShaderiv(shader_object, GL_INFO_LOG_LENGTH, &info_log_length);
-        p_info_log = (char *)malloc(info_log_length);
-
-        /* Get the compile error of the shader object */
-        glGetShaderInfoLog(shader_object, info_log_length, NULL, p_info_log);
-        printf("Shader compilation error: '%s'\n", p_info_log);
-        free((void *)p_info_log);
-
-        glDeleteShader(shader_object);
-        return 0;
-    }
-
-  return shader_object;
-}
-
-GLuint program_create(GLuint vertex_shader_object,
-                      GLuint fragment_shader_object)
-{
-    GLuint program;
-
-    GLint b_link_ok = GL_FALSE;
-
-    GLint info_log_length = 0;
-    char * p_info_log = NULL;
-
-    /* Create an empty program object */
-    program = glCreateProgram();
-    if (program == 0)
-    {
-        printf("Function glCreateProgram() failed\n");
-        return 0;
-    }
-
-    /* Attach the shader object to the program object */
-    glAttachShader(program, vertex_shader_object);
-    glAttachShader(program, fragment_shader_object);
-
-    /* Link the program object */
-    glLinkProgram(program);
-
-    /* Get status of the last link operation on program object */
-    glGetProgramiv(program, GL_LINK_STATUS, &b_link_ok);
-    if (b_link_ok == GL_FALSE)
-    {
-        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_length);
-        p_info_log = (char *)malloc(info_log_length);
-
-        /* Get the link error of the program object */
-        glGetProgramInfoLog(program, info_log_length, NULL, p_info_log);
-        printf("Program linking error: '%s'\n", p_info_log);
-        free((void *)p_info_log);
-
-        glDeleteProgram(program);
-        glDeleteShader(vertex_shader_object);
-        glDeleteShader(fragment_shader_object);
-
-        return 0;
-    }
-
-    return program;
-}
-
-OMX_ERRORTYPE omx_event_handler(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
-                                OMX_EVENTTYPE eEvent, OMX_U32 nData1,
-                                OMX_U32 nData2, OMX_PTR pEventData)
-{
-    shared_data_t * p_shared_data = (shared_data_t *)pAppData;
-    assert(p_shared_data != NULL);
-
-    switch (eEvent)
-    {
-        case OMX_EventCmdComplete:
-        {
-            if (nData1 != OMX_CommandStateSet)
-            {
-                /* Exit from top switch statement */
-                break;
-            }
-
-            switch (nData2)
-            {
-                case OMX_StateInvalid:
-                {
-                    printf("OMX_StateInvalid\n");
-                }
-                break;
-
-                case OMX_StateLoaded:
-                {
-                    printf("OMX_StateLoaded\n");
-                }
-                break;
-
-                case OMX_StateIdle:
-                {
-                    printf("OMX_StateIdle\n");
-                    sem_post(&(p_shared_data->sem_event_idle));
-                }
-                break;
-
-                case OMX_StateExecuting:
-                {
-                    printf("OMX_StateExecuting\n");
-                    sem_post(&(p_shared_data->sem_event_exec));
-                }
-                break;
-
-                case OMX_StatePause:
-                {
-                    printf("OMX_StatePause\n");
-                }
-                break;
-
-                case OMX_StateWaitForResources:
-                {
-                    printf("OMX_StateWaitForResources\n");
-                }
-                break;
-
-                default:
-                {
-                    /* Intentionally left blank */
-                }
-                break;
-            }
-        }
-        break;
-
-        default:
-        {
-            /* Intentionally left blank */
-        }
-        break;
-    }
-    return OMX_ErrorNone;
-}
-
-OMX_ERRORTYPE omx_empty_buffer_done(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
-                                    OMX_BUFFERHEADERTYPE* pBuffer)
-{
-    printf("EmptyBufferDone is called\n");
-
-    /* TODO: Should enable the flag to allow 'pBuffer' to be used
-     * (see step 11.6) */
-
-    return OMX_ErrorNone;
-}
-
-OMX_ERRORTYPE omx_fill_buffer_done(OMX_HANDLETYPE hComponent, OMX_PTR pAppData,
-                                   OMX_BUFFERHEADERTYPE* pBuffer)
-{
-    shared_data_t * p_shared_data = (shared_data_t *)pAppData;
-    assert(p_shared_data != NULL);
-
-    printf("FillBufferDone is called\n");
-
-    /* TODOs:
-     *   - Should enable the flag to allow 'pBuffer' to be used (see step 11.7).
+    /* Copy contents of 'p_str_arr' to 'p_tmp_str_arr'.
      *
-     *   - This is a blocking call so the application should not attempt to
-     *     refill the buffers during this call, but should queue them and
-     *     refill them in another thread.
-     *
-     *     For trial, we just write H.264 data to a file */
-    fwrite((char *)pBuffer->pBuffer, sizeof(char),
-           pBuffer->nFilledLen, p_shared_data->p_h264_fd);
+     * Note: This step is required because 'strtok_r' modifies its first
+     * argument. Therefore, variable 'p_str_arr' cannot be used */
+    p_tmp_str_arr = (char *)malloc(strlen(p_str_arr) + 1);
+    strcpy(p_tmp_str_arr, p_str_arr);
 
-    if (p_shared_data->pp_out_bufs[0] == pBuffer)
+    /* Extract tokens from 'p_tmp_str_arr' */
+    p_token_str = strtok_r(p_tmp_str_arr, p_delim_str, &p_save_str);
+
+    while (p_token_str != NULL)
     {
-        sem_post(&(p_shared_data->sem_h264_hdr_done));
-    }
-    else if (p_shared_data->pp_out_bufs[1] == pBuffer)
-    {
-        sem_post(&(p_shared_data->sem_h264_data_done));
-    }
-
-    return OMX_ErrorNone;
-}
-
-OMX_BOOL omx_wait_state(OMX_HANDLETYPE handle, OMX_STATETYPE state)
-{
-    OMX_BOOL b_is_successful = OMX_TRUE;
-
-    OMX_ERRORTYPE omx_error = OMX_ErrorNone;
-    OMX_STATETYPE omx_cur_state = OMX_StateInvalid;
-
-    do
-    {
-        omx_error = OMX_GetState(handle, &omx_cur_state);
-        if (omx_error != OMX_ErrorNone)
+        /* Compare each token with 'p_tmp_str' */
+        if (strcmp(str_to_uppercase(p_token_str), p_tmp_str) == 0)
         {
-            b_is_successful = OMX_FALSE;
+            b_is_found = true;
             break;
         }
-    }
-    while (omx_cur_state != state);
 
-    return b_is_successful;
+        p_token_str = strtok_r(NULL, p_delim_str, &p_save_str);
+    }
+
+    /* Free resources */
+    free(p_tmp_str);
+    free(p_tmp_str_arr);
+
+    return b_is_found;
+}
+
+/****************************** FOR ERROR OUTPUT ******************************/
+
+void errno_print()
+{
+    printf("Error: '%s' (code: '%d')\n", strerror(errno), errno);
 }
