@@ -36,4 +36,5 @@ $ make
 ```
 
 ## History
+- Version 1.1: Update to allow encode multiple frames (output 1 H264 video file), and improve performance by allowing multiple buffers.
 - Version 1.0: First version of h264-to-file application, only encode 1 frame, output 3 raw frames and 1 H264 frame.
