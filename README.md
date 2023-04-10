@@ -10,7 +10,7 @@
 These demo applications show how to use hardware acceleration and transfer data correctly on RZ/G2L and RZ/V2L Series Linux environment.  
 Hardware acceleration used in these demo applications include camera (USB), GPU, video encode, display, ...
 - h264-to-file: capture from camera, process by GPU, then encode to H264 video and write to file.
-- (To be implemented) raw-video-to-lcd: capture from camera, process by GPU, then display to the screen.
+- raw-video-to-lcd: capture from camera, process by GPU, then display to the screen.
 - (To be implemented) h264-to-rtsp: capture from camera, process by GPU, then encode to H264 video and stream over network by RTSP protocol
 - (To be implemented) video-to-lcd-and-file: capture from camera, process by GPU, then display to the screen and at the same time also encode to H264 file.
 
@@ -36,6 +36,9 @@ $ make
 ```
 
 ## History
+- Version 2.0: Add first version of raw-video-to-lcd application (about 30fps)
+
+  https://user-images.githubusercontent.com/14919751/230885849-34d9fa5c-3548-4c0b-873f-af82891d26bf.mp4
 - Version 1.2: Improve performance by allowing multi-threads (separate input and ouput threads).
 - Version 1.1: Update to allow encode multiple frames (output 1 H264 video file), and improve performance by allowing multiple buffers.
 - Version 1.0: First version of h264-to-file application, only encode 1 frame, output 3 raw frames and 1 H264 frame.
