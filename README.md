@@ -3,7 +3,7 @@
 ## Table of contents
 * [General info](#general-info)
 * [Used Technologies](#used-technologies)
-* [Compile](#compile)
+* [How to use](#how-to-use)
 * [History](#history)
 
 ## General info
@@ -25,15 +25,37 @@ Depends on the application, GPU processing also perform format conversion for vi
 
 Note: OMX encode and GPU processing use Renesas proprietary libraries.  
 Other technologies are based on opensource software, but have Renesas' additional changes to improve control over hardware.
-	
-## Compile
-Source the SDK first (refer to Renesas documents Startup Guide or Release Note).  
-Then compile these demos with make.
-```
-$ source /opt/poky/3.1.17/environment-setup-aarch64-poky-linux
-$ cd demo-camera-image-overlay/
-$ make
-```
+
+## How to use
+- Compile:  
+  Source the SDK first (refer to Renesas documents Startup Guide or Release Note).  
+  Then compile these demos with make.
+  ```
+  $ source /opt/poky/3.1.17/environment-setup-aarch64-poky-linux
+  $ cd demo-camera-image-overlay/
+  $ make
+  ```
+- Execute:  
+  Copy whole repository to rootfs of the board.
+  Run the sh script in application directory. Stop running by Ctrl-C.
+  ```
+  root@smarc-rzg2l:~/raw-video-to-lcd# ./raw-video-to-lcd.sh
+  Removing 'uvcvideo' from kernel
+  Adding 'uvcvideo' to kernel
+  Running sample application
+  V4L2 device:
+    Name: 'UVC Camera (046d:0825)'
+    Bus: 'usb-11c70100.usb-1.2'
+    Driver: 'uvcvideo (v5.10.145)'
+  V4L2 format:
+    Frame width (pixels): '640'
+    Frame height (pixels): '480'
+    Bytes per line: '1280'
+    Frame size (bytes): '614400'
+    Pixel format: 'YUYV'
+    Scan type: 'Progressive'
+  V4L2 framerate: '30.0'
+  ```
 
 ## History
 - Version 2.0: Add first version of raw-video-to-lcd application (about 30fps)
