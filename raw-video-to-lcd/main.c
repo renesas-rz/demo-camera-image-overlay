@@ -91,9 +91,6 @@ int main()
     EGLConfig egl_config;
 
     /* OpenGL ES */
-    GLuint rec_prog  = 0;
-    GLuint conv_prog = 0;
-
     gl_resources_t gl_resources;
 
     /* For calculating FPS */
@@ -202,22 +199,12 @@ int main()
      *                        STEP 6: SET UP OPENGL ES                        *
      **************************************************************************/
 
-    /* Create program object for drawing rectangle */
-    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
-                                       "rectangle.fs.glsl");
-
-    /* Create program object for converting YUYV to RGB */
-    conv_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
-                                        "yuyv-to-rgb.fs.glsl");
-
     /* Create resources needed for rendering */
-    gl_resources = gl_create_resources();
+    gl_resources = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
+                                       FRAME_HEIGHT_IN_PIXELS);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
-
-    /* Make sure Viewport matches the width and height of YUYV buffer */
-    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /**************************************************************************
      *               STEP 7: CREATE TEXTURES FROM YUYV BUFFERS                *
@@ -294,10 +281,13 @@ int main()
         }
 
         /* Convert YUYV texture to RGB texture */
-        gl_convert_yuyv(conv_prog, p_yuyv_texs[cam_buf.index], gl_resources);
+        gl_convert_yuyv(p_yuyv_texs[cam_buf.index], gl_resources);
 
         /* Draw rectangle on RGB texture */
-        gl_draw_rectangle(rec_prog, gl_resources);
+        gl_draw_rectangle(gl_resources);
+
+        /* Draw text on RGB texture */
+        gl_draw_text("This is a text", 25.0f, 25.0f, BLUE, gl_resources);
 
         /* Display to monitor */
         eglSwapBuffers(egl_display, egl_surface);
@@ -321,9 +311,6 @@ int main()
 
     /* Delete resources for OpenGL ES */
     gl_delete_resources(gl_resources);
-
-    glDeleteProgram(rec_prog);
-    glDeleteProgram(conv_prog);
 
     /**************************************************************************
      *                         STEP 12: CLEAN UP EGL                          *

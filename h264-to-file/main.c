@@ -700,9 +700,6 @@ void * thread_input(void * p_param)
     EGLConfig config;
 
     /* OpenGL ES */
-    GLuint rec_prog  = 0;
-    GLuint conv_prog = 0;
-
     gl_resources_t gl_resources;
 
     /* YUYV images and textures */
@@ -736,22 +733,12 @@ void * thread_input(void * p_param)
      *                        STEP 2: SET UP OPENGL ES                        *
      **************************************************************************/
 
-    /* Create program object for drawing rectangle */
-    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
-                                       "rectangle.fs.glsl");
-
-    /* Create program object for converting YUYV to NV12 */
-    conv_prog = gl_create_prog_from_src("yuyv-to-nv12.vs.glsl",
-                                        "yuyv-to-nv12.fs.glsl");
-
     /* Create resources needed for rendering */
-    gl_resources = gl_create_resources();
+    gl_resources = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
+                                       FRAME_HEIGHT_IN_PIXELS);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
-
-    /* Make sure Viewport matches the width and height of YUYV buffer */
-    glViewport(0, 0, FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /**************************************************************************
      *               STEP 3: CREATE TEXTURES FROM YUYV BUFFERS                *
@@ -847,10 +834,13 @@ void * thread_input(void * p_param)
         glBindFramebuffer(GL_FRAMEBUFFER, p_nv12_fbs[index]);
 
         /* Convert YUYV texture to NV12 texture */
-        gl_convert_yuyv(conv_prog, p_yuyv_texs[cam_buf.index], gl_resources);
+        gl_convert_yuyv(p_yuyv_texs[cam_buf.index], gl_resources);
 
         /* Draw rectangle on NV12 texture */
-        gl_draw_rectangle(rec_prog, gl_resources);
+        gl_draw_rectangle(gl_resources);
+
+        /* Draw text on NV12 texture */
+        gl_draw_text("This is a text", 25.0f, 25.0f, BLUE, gl_resources);
 
         /* Reuse camera's buffer */
         assert(v4l2_enqueue_buf(p_data->cam_fd, cam_buf.index));
@@ -888,9 +878,6 @@ void * thread_input(void * p_param)
     egl_delete_images(display, p_yuyv_imgs, YUYV_BUFFER_COUNT);
 
     /* Delete resources for OpenGL ES */
-    glDeleteProgram(rec_prog);
-    glDeleteProgram(conv_prog);
-
     gl_delete_resources(gl_resources);
 
     /**************************************************************************

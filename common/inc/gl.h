@@ -42,21 +42,68 @@
 #include <GLES3/gl3.h>
 #include <GLES3/gl32.h>
 
+#include "cglm/cglm.h"
+
 #include "egl.h"
+#include "ttf.h"
+
+/******************************************************************************
+ *                              MACRO VARIABLES                               *
+ ******************************************************************************/
+
+#define RECTANGLE_VS "rectangle.vs.glsl"
+#define RECTANGLE_FS "rectangle.fs.glsl"
+
+#define YUYV_CONV_VS "yuyv-conv.vs.glsl"
+#define YUYV_CONV_FS "yuyv-conv.fs.glsl"
+
+#define TEXT_VS "text.vs.glsl"
+#define TEXT_FS "text.fs.glsl"
+
+#define TTF_FILE "LiberationSans-Regular.ttf"
+
+#define BLACK ((color_t){ 0.0f, 0.0f, 0.0f })
+#define WHITE ((color_t){ 1.0f, 1.0f, 1.0f })
+#define RED   ((color_t){ 1.0f, 0.0f, 0.0f })
+#define GREEN ((color_t){ 0.0f, 1.0f, 0.0f })
+#define BLUE  ((color_t){ 0.0f, 0.0f, 1.0f })
 
 /******************************************************************************
  *                           STRUCTURE DEFINITIONS                            *
  ******************************************************************************/
 
+typedef float color_t[3]; /* { red, green, blue } */
+
 typedef struct
 {
+    /* Frame width and height in pixels */
+    uint32_t frame_width;
+    uint32_t frame_height;
+
     /* For drawing rectangle */
+    GLuint rec_prog;
+
     GLuint vbo_rec_vertices;
     GLuint ibo_rec_indices;
 
     /* For converting YUYV */
+    GLuint conv_prog;
+
     GLuint vbo_canvas_vertices;
     GLuint ibo_canvas_indices;
+
+    /* For drawing text */
+    GLuint text_prog;
+
+    GLuint vbo_text_vertices;
+
+    GLint u_projection;
+    GLint u_text_color;
+
+    mat4 projection_mat;
+
+    /* An array containing information of glyphs */
+    glyph_t * p_glyphs[GLYPH_ARRAY_LEN];
 
 } gl_resources_t;
 
@@ -112,7 +159,7 @@ GLuint * gl_create_framebuffers(GLuint * p_textures, uint32_t count);
 void gl_delete_framebuffers(GLuint * p_fbs, uint32_t count);
 
 /* Create and return resources for OpenGL ES */
-gl_resources_t gl_create_resources();
+gl_resources_t gl_create_resources(uint32_t frame_width, uint32_t frame_height);
 
 /* Delete resources for OpenGL ES */
 void gl_delete_resources(gl_resources_t res);
@@ -121,10 +168,15 @@ void gl_delete_resources(gl_resources_t res);
  *
  * https://learnopengl.com
  * https://en.wikibooks.org/wiki/OpenGL_Programming */
-void gl_draw_rectangle(GLuint prog, gl_resources_t res);
+void gl_draw_rectangle(gl_resources_t res);
 
 /* Convert YUYV texture.
  * The destination format is determined by 'prog' and framebuffer's layout */
-void gl_convert_yuyv(GLuint prog, GLuint yuyv_tex, gl_resources_t res);
+void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res);
+
+/* Draw text.
+ * https://learnopengl.com/In-Practice/Text-Rendering */
+void gl_draw_text(const char * p_text, float x, float y,
+                  color_t color, gl_resources_t res);
 
 #endif /* _GL_H_ */

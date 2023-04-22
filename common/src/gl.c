@@ -353,7 +353,7 @@ void gl_delete_framebuffers(GLuint * p_fbs, uint32_t count)
     free(p_fbs);
 }
 
-gl_resources_t gl_create_resources()
+gl_resources_t gl_create_resources(uint32_t frame_width, uint32_t frame_height)
 {
     gl_resources_t res;
 
@@ -395,6 +395,25 @@ gl_resources_t gl_create_resources()
         2, 3, 0,
     };
 
+    /* Set frame width and height */
+    res.frame_width  = frame_width;
+    res.frame_height = frame_height;
+
+    /* Create program objects */
+    res.rec_prog  = gl_create_prog_from_src(RECTANGLE_VS, RECTANGLE_FS);
+    res.conv_prog = gl_create_prog_from_src(YUYV_CONV_VS, YUYV_CONV_FS);
+    res.text_prog = gl_create_prog_from_src(TEXT_VS, TEXT_FS);
+
+    /* Get uniform variables for text program */
+    res.u_text_color = glGetUniformLocation(res.text_prog, "textColor");
+    res.u_projection = glGetUniformLocation(res.text_prog, "projection");
+
+    /* Create projection matrix */
+    glm_ortho(0, frame_width, 0, frame_height, 0, 1, res.projection_mat);
+
+    /* Generate glyph array */
+    ttf_generate(TTF_FILE, res.p_glyphs);
+
     /* Create vertex/index buffer objects and add data to it */
     glGenBuffers(1, &(res.vbo_rec_vertices));
     glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_vertices);
@@ -416,6 +435,14 @@ gl_resources_t gl_create_resources()
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(canvas_indices),
                  canvas_indices, GL_STATIC_DRAW);
 
+    glGenBuffers(1, &(res.vbo_text_vertices));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_vertices);
+    glBufferData(GL_ARRAY_BUFFER, 6 * (4 * sizeof(float)), NULL,
+                 GL_DYNAMIC_DRAW);
+
+    /* Set Viewport */
+    glViewport(0, 0, frame_width, frame_height);
+
     /* Unbind buffers */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -425,24 +452,30 @@ gl_resources_t gl_create_resources()
 
 void gl_delete_resources(gl_resources_t res)
 {
+    /* Delete glyph array */
+    ttf_delete_glyphs(res.p_glyphs);
+
+    /* Delete programs */
+    glDeleteProgram(res.rec_prog);
+    glDeleteProgram(res.conv_prog);
+    glDeleteProgram(res.text_prog);
+
     /* Delete vertex buffer objects */
     glDeleteBuffers(1, &(res.vbo_rec_vertices));
     glDeleteBuffers(1, &(res.vbo_canvas_vertices));
+    glDeleteBuffers(1, &(res.vbo_text_vertices));
 
     /* Delete index buffer objects */
     glDeleteBuffers(1, &(res.ibo_rec_indices));
     glDeleteBuffers(1, &(res.ibo_canvas_indices));
 }
 
-void gl_draw_rectangle(GLuint prog, gl_resources_t res)
+void gl_draw_rectangle(gl_resources_t res)
 {
     GLint tmp_size = 0;
 
-    /* Check parameter */
-    assert(prog != 0);
-
     /* Use program object for drawing rectangle */
-    glUseProgram(prog);
+    glUseProgram(res.rec_prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -477,15 +510,15 @@ void gl_draw_rectangle(GLuint prog, gl_resources_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_convert_yuyv(GLuint prog, GLuint yuyv_tex, gl_resources_t res)
+void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
 {
     GLint tmp_size = 0;
 
-    /* Check parameters */
-    assert((prog != 0) && (yuyv_tex != 0));
+    /* Check parameter */
+    assert(yuyv_tex != 0);
 
     /* Use program object for converting YUYV */
-    glUseProgram(prog);
+    glUseProgram(res.conv_prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -524,4 +557,92 @@ void gl_convert_yuyv(GLuint prog, GLuint yuyv_tex, gl_resources_t res)
     /* Disable attributes */
     glDisableVertexAttribArray(0);
     glDisableVertexAttribArray(1);
+}
+
+void gl_draw_text(const char * p_text, float x, float y,
+                  color_t color, gl_resources_t res)
+{
+    uint32_t index = 0;
+
+    float pos_x = 0.0f;
+    float pos_y = 0.0f;
+
+    int width  = 0;
+    int height = 0;
+
+    glyph_t * p_glyph = NULL;
+
+    /* Check parameter */
+    assert(p_text != NULL);
+
+    /* Enable blending */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    /* Use program object for drawing text */
+    glUseProgram(res.text_prog);
+
+    /* Set text color to uniform variable */
+    glUniform3f(res.u_text_color, color[0], color[1], color[2]);
+
+    /* Set projection matrix to uniform variable */
+    glUniformMatrix4fv(res.u_projection, 1, GL_FALSE, res.projection_mat[0]);
+
+    /* Enable attribute 'aVertex' since it's disabled by default */
+    glEnableVertexAttribArray(0);
+
+    /* Show OpenGL ES how the 'vbo_text_vertices' should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_vertices);
+
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE,
+                          4 * sizeof(GLfloat), (void *)0);
+
+    /* Iterate through all characters */
+    for (index = 0; index < strlen(p_text); index++)
+    {
+        p_glyph = res.p_glyphs[(unsigned char)p_text[index]];
+
+        if (p_glyph != NULL)
+        {
+            width  = p_glyph->width;
+            height = p_glyph->height;
+
+            pos_x = x + p_glyph->offset_x;
+            pos_y = y - (height - p_glyph->offset_y);
+
+            float text_vertices[6][4] =
+            {
+                { pos_x        , pos_y + height, 0.0f, 0.0f },
+                { pos_x        , pos_y         , 0.0f, 1.0f },
+                { pos_x + width, pos_y         , 1.0f, 1.0f },
+                { pos_x        , pos_y + height, 0.0f, 0.0f },
+                { pos_x + width, pos_y         , 1.0f, 1.0f },
+                { pos_x + width, pos_y + height, 1.0f, 0.0f }
+            };
+
+            /* Update content of VBO 'vbo_text_vertices' */
+            glBufferSubData(GL_ARRAY_BUFFER, 0,
+                            sizeof(text_vertices), text_vertices);
+
+            glBindTexture(GL_TEXTURE_2D, p_glyph->tex_id);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+
+            x += p_glyph->advance;
+        }
+    }
+
+    /* Wait until 'glDrawArrays' finishes */
+    glFinish();
+
+    /* Unbind texture */
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    /* Unbind VBO buffer */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    /* Disable attribute */
+    glDisableVertexAttribArray(0);
+
+    /* Disable blending */
+    glDisable(GL_BLEND);
 }

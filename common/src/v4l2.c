@@ -1,5 +1,5 @@
 /*******************************************************************************
- * FILENAME: v4l2.h
+ * FILENAME: v4l2.c
  *
  * DESCRIPTION:
  *   V4L2 function definition.

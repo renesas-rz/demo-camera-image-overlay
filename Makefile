@@ -8,14 +8,16 @@ LDFLAGS = -lmmngr                                \
           -lpthread                              \
           $(shell pkg-config egl --libs)         \
           $(shell pkg-config glesv2 --libs)      \
+          $(shell pkg-config freetype2 --libs)   \
           $(shell pkg-config wayland-egl --libs)
 
 # Define directories
 OBJ_DIR = ./objs
+TTF_DIR = ./common/ttf
 CMN_SRC_DIR = ./common/src
 CMN_INC_DIR = ./common/inc
 
-CFLAGS += -I$(CMN_INC_DIR)
+CFLAGS += -I$(CMN_INC_DIR) $(shell pkg-config freetype2 --cflags)
 
 # Define variables for Wayland
 WL_PROTOCOLS_DIR   = $(shell pkg-config wayland-protocols --variable=pkgdatadir)
@@ -31,16 +33,23 @@ CMN_SRCS = $(CMN_SRC_DIR)/$(WL_SRC)                 \
 # Get common object files
 CMN_OBJS = $(CMN_SRCS:%.c=$(OBJ_DIR)/%.o)
 
+# Define TrueType font
+TTF_FILE = LiberationSans-Regular.ttf
+
 # Define sample apps
 APP_DIRS = ./h264-to-file     \
            ./raw-video-to-lcd
 
 APPS = $(APP_DIRS:%=%/main)
+TTFS = $(APP_DIRS:%=%/$(TTF_FILE))
 
 # Make sure 'all' and 'clean' are not files
 .PHONY: all clean
 
-all: $(APPS)
+all: $(TTFS) $(APPS)
+
+$(TTFS): %: $(TTF_DIR)/$(TTF_FILE)
+	install -m 664 $^ $@
 
 $(APPS): %: $(OBJ_DIR)/%.o $(CMN_OBJS)
 	$(CC) $(LDFLAGS) $^ -o $@
@@ -54,6 +63,7 @@ $(CMN_SRC_DIR)/$(WL_SRC):
 	wayland-scanner client-header $(XDG_SHELL_PROTOCOL) $(CMN_INC_DIR)/$(WL_INC)
 
 clean:
+	rm -f  $(TTFS)
 	rm -f  $(APPS)
 	rm -rf $(OBJ_DIR)
 	rm -f  $(CMN_SRC_DIR)/$(WL_SRC)
