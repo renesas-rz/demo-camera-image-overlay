@@ -305,7 +305,7 @@ int main()
         gl_draw_rectangle(rec_prog, gl_res);
 
         /* Draw text */
-        gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLUE, gl_res);
+        gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLACK, gl_res);
 
         /* Display to monitor */
         eglSwapBuffers(egl_display, egl_surface);
