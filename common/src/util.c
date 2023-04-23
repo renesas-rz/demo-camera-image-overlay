@@ -67,7 +67,8 @@ char * util_to_uppercase(char * p_str)
 }
 
 bool util_find_whole_str(const char * p_str_arr,
-                         const char * p_delim_str, const char * p_str)
+                         const char * p_delim_str,
+                         const char * p_str)
 {
     bool b_is_found = false;
 

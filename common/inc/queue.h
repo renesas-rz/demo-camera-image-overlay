@@ -60,7 +60,8 @@ queue_t queue_create_empty(uint32_t elm_cnt, uint32_t elm_size);
 /* Return a full queue whose content is a shallow copy of 'p_array'.
  * Note: The queue must be deleted when no longer used */
 queue_t queue_create_full(const void * p_array,
-                          uint32_t elm_cnt, uint32_t elm_size);
+                          uint32_t elm_cnt,
+                          uint32_t elm_size);
 
 /* Delete queue.
  * Note: This function will deallocate 'p_queue->p_array' */

@@ -90,7 +90,8 @@ char * util_to_uppercase(char * p_str);
  *
  * Note: The function is not case sensitive */
 bool util_find_whole_str(const char * p_str_arr,
-                         const char * p_delim_str, const char * p_str);
+                         const char * p_delim_str,
+                         const char * p_str);
 
 /****************************** FOR FILE ACCESS *******************************/
 

@@ -5,8 +5,8 @@
  *   TrueType font functions.
  *
  * PUBLIC FUNCTIONS:
- *    ttf_generate
- *    ttf_delete_glyphs
+ *   ttf_generate
+ *   ttf_delete_glyphs
  *
  * AUTHOR: RVC       START DATE: 18/04/2023
  *

@@ -18,6 +18,8 @@
  *                              MACRO VARIABLES                               *
  ******************************************************************************/
 
+#define FONT_FILE "LiberationSans-Regular.ttf"
+
 #define FRAME_WIDTH_IN_PIXELS  640
 
 #define FRAME_HEIGHT_IN_PIXELS 480
@@ -705,7 +707,7 @@ void * thread_input(void * p_param)
     GLuint yuyv_to_rgb_prog = 0;
     GLuint rgb_to_nv12_prog = 0;
 
-    gl_resources_t gl_res;
+    gl_res_t gl_res;
 
     /* YUYV images and textures */
     EGLImageKHR * p_yuyv_imgs = NULL;
@@ -758,7 +760,8 @@ void * thread_input(void * p_param)
                                                "rgb-to-nv12.fs.glsl");
 
     /* Create resources needed for rendering */
-    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
+                                 FRAME_HEIGHT_IN_PIXELS, FONT_FILE);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
@@ -867,8 +870,8 @@ void * thread_input(void * p_param)
         assert(v4l2_dequeue_buf(p_data->cam_fd, &cam_buf));
 
         /* Bind framebuffer.
-         * All subsequent rendering operations will now render to RGB texture
-         * which is linked to the framebuffer (see above):
+         * All subsequent rendering operations will now render to
+         * RGB texture which is linked to the framebuffer (see above):
          * https://learnopengl.com/Advanced-OpenGL/Framebuffers */
         glBindFramebuffer(GL_FRAMEBUFFER, p_rgb_fbs[cam_buf.index]);
 
@@ -883,8 +886,8 @@ void * thread_input(void * p_param)
         gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLUE, gl_res);
 
         /* Bind framebuffer.
-         * All subsequent rendering operations will now render to NV12 texture
-         * which is linked to the framebuffer (see above) */
+         * All subsequent rendering operations will now render to
+         * NV12 texture which is linked to the framebuffer (see above) */
         glBindFramebuffer(GL_FRAMEBUFFER, p_nv12_fbs[index]);
 
         /* Convert RGB texture to NV12 texture */

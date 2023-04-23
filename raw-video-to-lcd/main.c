@@ -18,6 +18,8 @@
 
 #define WINDOW_TITLE "Raw video to LCD"
 
+#define FONT_FILE "LiberationSans-Regular.ttf"
+
 #define FRAME_WIDTH_IN_PIXELS  640
 
 #define FRAME_HEIGHT_IN_PIXELS 480
@@ -95,7 +97,7 @@ int main()
     GLuint conv_prog = 0;
     GLuint text_prog = 0;
 
-    gl_resources_t gl_res;
+    gl_res_t gl_res;
 
     /* For calculating FPS */
     struct timeval temp_tv;
@@ -215,7 +217,8 @@ int main()
     text_prog = gl_create_prog_from_src("text.vs.glsl", "text.fs.glsl");
 
     /* Create resources needed for rendering */
-    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
+    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
+                                 FRAME_HEIGHT_IN_PIXELS, FONT_FILE);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());

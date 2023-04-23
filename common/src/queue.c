@@ -49,7 +49,8 @@ queue_t queue_create_empty(uint32_t elm_cnt, uint32_t elm_size)
 }
 
 queue_t queue_create_full(const void * p_array,
-                          uint32_t elm_cnt, uint32_t elm_size)
+                          uint32_t elm_cnt,
+                          uint32_t elm_size)
 {
     queue_t queue;
 

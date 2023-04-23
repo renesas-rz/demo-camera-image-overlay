@@ -23,7 +23,8 @@
  *                               EGL EXTENSIONS                               *
  ******************************************************************************/
 
-typedef EGLImageKHR (*EGLCREATEIMAGEKHR) (EGLDisplay dpy, EGLContext ctx,
+typedef EGLImageKHR (*EGLCREATEIMAGEKHR) (EGLDisplay dpy,
+                                          EGLContext ctx,
                                           EGLenum target,
                                           EGLClientBuffer buffer,
                                           EGLint * p_attr_list);
@@ -119,8 +120,7 @@ void egl_disconnect_display(EGLDisplay display)
     eglTerminate(display);
 }
 
-EGLContext egl_create_context(EGLDisplay display,
-                              EGLConfig config, EGLSurface surface)
+EGLContext egl_create_context(EGLDisplay disp, EGLConfig conf, EGLSurface surf)
 {
     EGLContext context = EGL_NO_CONTEXT;
 
@@ -132,10 +132,10 @@ EGLContext egl_create_context(EGLDisplay display,
     };
 
     /* Check parameter */
-    assert(display != EGL_NO_DISPLAY);
+    assert(disp != EGL_NO_DISPLAY);
 
     /* Create an EGL rendering context */
-    context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs);
+    context = eglCreateContext(disp, conf, EGL_NO_CONTEXT, ctx_attribs);
     if (context == EGL_NO_CONTEXT)
     {
         printf("Error: Failed to create EGL context\n");
@@ -143,10 +143,10 @@ EGLContext egl_create_context(EGLDisplay display,
     }
 
     /* Attach the context to EGL surfaces */
-    if (eglMakeCurrent(display, surface, surface, context) == EGL_FALSE)
+    if (eglMakeCurrent(disp, surf, surf, context) == EGL_FALSE)
     {
         printf("Error: Failed to bind context\n");
-        eglDestroyContext(display, context);
+        eglDestroyContext(disp, context);
 
         return EGL_NO_CONTEXT;
     }
@@ -208,20 +208,20 @@ bool egl_init_ext_funcs(EGLDisplay display)
     return true;
 }
 
-EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
-                                  uint32_t img_height, int dmabuf_fd)
+EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t width,
+                                  uint32_t height, int dmabuf_fd)
 {
     EGLImageKHR img = EGL_NO_IMAGE_KHR;
 
     /* Check parameters */
     assert(display != EGL_NO_DISPLAY);
-    assert((img_width > 0) && (img_height > 0) && (dmabuf_fd > 0));
+    assert((width > 0) && (height > 0) && (dmabuf_fd > 0));
 
     EGLint img_attribs[] =
     {
         /* The logical dimensions of YUYV buffer in pixels */
-        EGL_WIDTH, img_width,
-        EGL_HEIGHT, img_height,
+        EGL_WIDTH, width,
+        EGL_HEIGHT, height,
 
         /* Pixel format of the buffer, as specified by 'drm_fourcc.h' */
         EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_YUYV,
@@ -235,7 +235,7 @@ EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
 
         /* The number of bytes between the start of subsequent rows of samples
          * in plane 0 */
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, img_width * 2, /* 2 bytes per pixel */
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, width * 2, /* 2 bytes per pixel */
 
         /* Y, U, and V color range from [0, 255] */
         EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT,
@@ -244,7 +244,7 @@ EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
          * by a factor of 2 */
         EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_EXT,
         EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,
-                                                EGL_YUV_CHROMA_SITING_0_5_EXT,
+                                               EGL_YUV_CHROMA_SITING_0_5_EXT,
         EGL_NONE,
     };
 
@@ -260,7 +260,7 @@ EGLImageKHR egl_create_yuyv_image(EGLDisplay display, uint32_t img_width,
 }
 
 EGLImageKHR * egl_create_yuyv_images(EGLDisplay display,
-                                     uint32_t img_width, uint32_t img_height,
+                                     uint32_t width, uint32_t height,
                                      v4l2_dmabuf_exp_t * p_bufs, uint32_t cnt)
 {
     EGLImageKHR * p_imgs = NULL;
@@ -268,15 +268,14 @@ EGLImageKHR * egl_create_yuyv_images(EGLDisplay display,
 
     /* Check parameters */
     assert(display != EGL_NO_DISPLAY);
-    assert((img_width > 0) && (img_height > 0));
+    assert((width > 0) && (height > 0));
     assert((p_bufs != NULL) && (cnt > 0));
 
     p_imgs = (EGLImageKHR *)malloc(cnt * sizeof(EGLImageKHR));
 
     for (index = 0; index < cnt; index++)
     {
-        p_imgs[index] = egl_create_yuyv_image(display,
-                                              img_width, img_height,
+        p_imgs[index] = egl_create_yuyv_image(display, width, height,
                                               p_bufs[index].dmabuf_fd);
         if (p_imgs[index] == EGL_NO_IMAGE_KHR)
         {
@@ -294,34 +293,34 @@ EGLImageKHR * egl_create_yuyv_images(EGLDisplay display,
 }
 
 EGLImageKHR egl_create_nv12_image(EGLDisplay display,
-                                  uint32_t img_width, uint32_t img_height,
+                                  uint32_t width, uint32_t height,
                                   int y_dmabuf_fd, int uv_dmabuf_fd)
 {
     EGLImageKHR img = EGL_NO_IMAGE_KHR;
 
     /* Check parameters */
     assert(display != EGL_NO_DISPLAY);
-    assert((img_width > 0) && (img_height > 0));
+    assert((width > 0) && (height > 0));
     assert((y_dmabuf_fd > 0) && (uv_dmabuf_fd > 0));
 
     EGLint img_attribs[] =
     {
         /* The logical dimensions of NV12 buffer in pixels */
-        EGL_WIDTH, img_width,
-        EGL_HEIGHT, img_height,
+        EGL_WIDTH, width,
+        EGL_HEIGHT, height,
 
         /* Pixel format of the buffer, as specified by 'drm_fourcc.h' */
         EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
 
         EGL_DMA_BUF_PLANE0_FD_EXT, y_dmabuf_fd,
         EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, img_width,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, width,
 
         /* These attribute-value pairs are necessary because NV12 contains 2
          * planes: plane 0 is for Y values and plane 1 is for chroma values */
         EGL_DMA_BUF_PLANE1_FD_EXT, uv_dmabuf_fd,
         EGL_DMA_BUF_PLANE1_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE1_PITCH_EXT, img_width,
+        EGL_DMA_BUF_PLANE1_PITCH_EXT, width,
 
         /* Y, U, and V color range from [0, 255] */
         EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT,
@@ -330,7 +329,7 @@ EGLImageKHR egl_create_nv12_image(EGLDisplay display,
          * dimensions, by a factor of 2 */
         EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
         EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,
-                                                EGL_YUV_CHROMA_SITING_0_5_EXT,
+                                                 EGL_YUV_CHROMA_SITING_0_5_EXT,
         EGL_NONE,
     };
 
@@ -346,7 +345,7 @@ EGLImageKHR egl_create_nv12_image(EGLDisplay display,
 }
 
 EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
-                                     uint32_t img_width, uint32_t img_height,
+                                     uint32_t width, uint32_t height,
                                      mmngr_buf_t * p_bufs, uint32_t count)
 {
     EGLImageKHR * p_imgs = NULL;
@@ -356,7 +355,7 @@ EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
 
     /* Check parameters */
     assert(display != EGL_NO_DISPLAY);
-    assert((img_width > 0) && (img_height > 0));
+    assert((width > 0) && (height > 0));
     assert((p_bufs != NULL) && (count > 0));
 
     p_imgs = (EGLImageKHR *)malloc(count * sizeof(EGLImageKHR));
@@ -365,8 +364,7 @@ EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
     {
         p_dmabufs = p_bufs[index].p_dmabufs;
 
-        p_imgs[index] = egl_create_nv12_image(display,
-                                              img_width, img_height,
+        p_imgs[index] = egl_create_nv12_image(display, width, height,
                                               p_dmabufs[0].dmabuf_fd,
                                               p_dmabufs[1].dmabuf_fd);
         if (p_imgs[index] == EGL_NO_IMAGE_KHR)
@@ -384,15 +382,14 @@ EGLImageKHR * egl_create_nv12_images(EGLDisplay display,
     return p_imgs;
 }
 
-void egl_delete_images(EGLDisplay display,
-                       EGLImageKHR * p_imgs, uint32_t count)
+void egl_delete_images(EGLDisplay display, EGLImageKHR * p_imgs, uint32_t cnt)
 {
     uint32_t index = 0;
 
     /* Check parameters */
     assert((display != EGL_NO_DISPLAY) && (p_imgs != NULL));
 
-    for (index = 0; index < count; index++)
+    for (index = 0; index < cnt; index++)
     {
         eglDestroyImageKHR(display, p_imgs[index]);
     }

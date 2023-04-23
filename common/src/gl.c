@@ -349,20 +349,19 @@ void gl_delete_textures(GLuint * p_textures, uint32_t count)
     free(p_textures);
 }
 
-GLuint gl_create_framebuffer(GLenum tex_target, GLuint texture)
+GLuint gl_create_framebuffer(GLenum tgt, GLuint tex)
 {
     GLuint fb = 0;
 
     /* Check parameter */
-    assert(texture != 0);
+    assert(tex != 0);
 
     /* Create and bind framebuffer */
     glGenFramebuffers(1, &fb);
     glBindFramebuffer(GL_FRAMEBUFFER, fb);
 
     /* Attach texture to the color buffer of currently bound framebuffer */
-    glFramebufferTexture2D(GL_FRAMEBUFFER,
-                           GL_COLOR_ATTACHMENT0, tex_target, texture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tgt, tex, 0);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     {
@@ -378,20 +377,19 @@ GLuint gl_create_framebuffer(GLenum tex_target, GLuint texture)
     return fb;
 }
 
-GLuint * gl_create_framebuffers(GLuint tex_target,
-                                GLuint * p_textures, uint32_t count)
+GLuint * gl_create_framebuffers(GLuint target, GLuint * p_texs, uint32_t count)
 {
     GLuint * p_fbs = NULL;
     uint32_t index = 0;
 
     /* Check parameters */
-    assert((p_textures != NULL) && (count > 0));
+    assert((p_texs != NULL) && (count > 0));
 
     p_fbs = (GLuint *)malloc(count * sizeof(GLuint));
 
     for (index = 0; index < count; index++)
     {
-        p_fbs[index] = gl_create_framebuffer(tex_target, p_textures[index]);
+        p_fbs[index] = gl_create_framebuffer(target, p_texs[index]);
         if (p_fbs[index] == 0)
         {
             break;
@@ -421,82 +419,67 @@ void gl_delete_framebuffers(GLuint * p_fbs, uint32_t count)
     free(p_fbs);
 }
 
-gl_resources_t gl_create_resources(uint32_t frame_width, uint32_t frame_height)
+gl_res_t gl_create_resources(uint32_t width,
+                             uint32_t height,
+                             const char * p_ttf)
 {
-    gl_resources_t res;
+    gl_res_t res;
 
-    /* For drawing rectangle */
+    /* Check parameters */
+    assert((p_ttf != NULL) && (width > 0) && (height > 0));
 
     /* The positions and colors of rectangle */
-    GLfloat rec_vertices[] =
+    GLfloat rec_verts[] =
     {
-        /* Positions                      Colors */
+        /* Rectangle vertices             Colors */
         -0.2f, -0.2f, /* Bottom-left  */  1.0f, 1.0f, 1.0f, /* White */
          0.2f, -0.2f, /* Bottom-right */  1.0f, 0.0f, 0.0f, /* Red   */
          0.2f,  0.2f, /* Top-right    */  0.0f, 1.0f, 0.0f, /* Green */
         -0.2f,  0.2f, /* Top-left     */  0.0f, 0.0f, 1.0f, /* Blue  */
     };
 
-    /* Set of indices that refer to 'rec_vertices' */
-    GLushort rec_indices[] =
-    {
-        0, 1, 2,
-        2, 3, 0,
-    };
-
-    /* For converting YUYV */
-
     /* No zooming in/out and convert entire YUYV texture */
-    GLfloat canvas_vertices[] =
+    GLfloat cnv_verts[] =
     {
-        /* Positions   Texture coordinates */
-        -1.0f, -1.0f,  0.0f, 0.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-         1.0f,  1.0f,  1.0f, 1.0f,
-        -1.0f,  1.0f,  0.0f, 1.0f,
+        /* Canvas vertices               Texture vertices */
+        -1.0f, -1.0f, /* Bottom-left  */ 0.0f, 0.0f, /* Bottom-left  */
+         1.0f, -1.0f, /* Bottom-right */ 1.0f, 0.0f, /* Bottom-right */
+         1.0f,  1.0f, /* Top-right    */ 1.0f, 1.0f, /* Top-right    */
+        -1.0f,  1.0f, /* Top-left     */ 0.0f, 1.0f, /* Top-left     */
     };
 
-    /* Set of indices that refer to position part of 'canvas_vertices' */
-    GLushort canvas_indices[] =
+    /* Set of indices that refer to position part of vertex array */
+    GLubyte idxs[] =
     {
         0, 1, 2,
         2, 3, 0,
     };
 
     /* Create projection matrix */
-    glm_ortho(0, frame_width, 0, frame_height, 0, 1, res.projection_mat);
+    glm_ortho(0, width, 0, height, 0, 1, res.projection_mat);
 
     /* Generate glyph array */
-    ttf_generate(TTF_FILE, res.p_glyphs);
+    ttf_generate(p_ttf, res.p_glyphs);
 
     /* Create vertex/index buffer objects and add data to it */
-    glGenBuffers(1, &(res.vbo_rec_vertices));
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_vertices);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(rec_vertices), rec_vertices,
-                 GL_STATIC_DRAW);
+    glGenBuffers(1, &(res.vbo_rec_verts));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_verts);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(rec_verts), rec_verts, GL_STATIC_DRAW);
 
-    glGenBuffers(1, &(res.ibo_rec_indices));
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_rec_indices);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(rec_indices), rec_indices,
-                 GL_STATIC_DRAW);
+    glGenBuffers(1, &(res.vbo_canvas_verts));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_verts);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cnv_verts), cnv_verts, GL_STATIC_DRAW);
 
-    glGenBuffers(1, &(res.vbo_canvas_vertices));
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_vertices);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(canvas_vertices), canvas_vertices,
-                 GL_STATIC_DRAW);
+    glGenBuffers(1, &(res.vbo_text_verts));
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_verts);
+    glBufferData(GL_ARRAY_BUFFER, 4 * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
 
-    glGenBuffers(1, &(res.ibo_canvas_indices));
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(canvas_indices),
-                 canvas_indices, GL_STATIC_DRAW);
-
-    glGenBuffers(1, &(res.vbo_text_vertices));
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_vertices);
-    glBufferData(GL_ARRAY_BUFFER, 6 * (4 * sizeof(float)), NULL,
-                 GL_DYNAMIC_DRAW);
+    glGenBuffers(1, &(res.ibo));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idxs), idxs, GL_STATIC_DRAW);
 
     /* Set Viewport */
-    glViewport(0, 0, frame_width, frame_height);
+    glViewport(0, 0, width, height);
 
     /* Unbind buffers */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -505,48 +488,51 @@ gl_resources_t gl_create_resources(uint32_t frame_width, uint32_t frame_height)
     return res;
 }
 
-void gl_delete_resources(gl_resources_t res)
+void gl_delete_resources(gl_res_t res)
 {
     /* Delete glyph array */
     ttf_delete_glyphs(res.p_glyphs);
 
     /* Delete vertex buffer objects */
-    glDeleteBuffers(1, &(res.vbo_rec_vertices));
-    glDeleteBuffers(1, &(res.vbo_canvas_vertices));
-    glDeleteBuffers(1, &(res.vbo_text_vertices));
+    glDeleteBuffers(1, &(res.vbo_rec_verts));
+    glDeleteBuffers(1, &(res.vbo_canvas_verts));
+    glDeleteBuffers(1, &(res.vbo_text_verts));
 
-    /* Delete index buffer objects */
-    glDeleteBuffers(1, &(res.ibo_rec_indices));
-    glDeleteBuffers(1, &(res.ibo_canvas_indices));
+    /* Delete index buffer object */
+    glDeleteBuffers(1, &(res.ibo));
 }
 
-void gl_draw_rectangle(GLuint prog, gl_resources_t res)
+void gl_draw_rectangle(GLuint prog, gl_res_t res)
 {
-    GLint tmp_size = 0;
+    GLint tmp_cnt = 0;
+
+    /* Check parameter */
+    assert(prog != 0);
 
     /* Use program object for drawing rectangle */
     glUseProgram(prog);
 
-    /* Enable attribute 'aPos' since it's disabled by default */
+    /* Enable attribute 0 since it's disabled by default */
     glEnableVertexAttribArray(0);
 
-    /* Enable attribute 'aColor' since it's disabled by default */
+    /* Enable attribute 1 since it's disabled by default */
     glEnableVertexAttribArray(1);
 
-    /* Show OpenGL ES how the 'vbo_rec_vertices' should be interpreted */
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_vertices);
+    /* Show OpenGL ES how the vertex array should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_rec_verts);
 
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
                           5 * sizeof(GLfloat), (void *)0);
+
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                          5 * sizeof(GLfloat), (void *)(2 * sizeof(GLfloat)));
+                          5 * sizeof(GLfloat),
+                          (void *)(2 * sizeof(GLfloat)));
 
     /* Draw rectangle */
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_rec_indices);
-    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_size);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo);
+    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_cnt);
 
-    glDrawElements(GL_TRIANGLES,
-                   tmp_size / sizeof(GLushort), GL_UNSIGNED_SHORT, 0);
+    glDrawElements(GL_TRIANGLES, tmp_cnt, GL_UNSIGNED_BYTE, 0);
 
     /* Wait until 'glDrawElements' finishes */
     glFinish();
@@ -560,58 +546,50 @@ void gl_draw_rectangle(GLuint prog, gl_resources_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_convert_yuyv(GLuint prog, GLenum tex_target,
-                     GLuint yuyv_tex, gl_resources_t res)
+void gl_convert_yuyv(GLuint prog, GLenum target, GLuint yuyv_tex, gl_res_t res)
 {
-    GLint tmp_size = 0;
+    GLint tmp_cnt = 0;
 
     /* Check parameter */
-    assert(yuyv_tex != 0);
+    assert((prog != 0) && (yuyv_tex != 0));
 
     /* Use program object for converting YUYV */
     glUseProgram(prog);
 
-    /* Enable attribute 'aPos' since it's disabled by default */
+    /* Enable attribute 0 since it's disabled by default */
     glEnableVertexAttribArray(0);
 
-    /* Enable attribute 'aYuyvTexCoord' since it's disabled by default */
-    glEnableVertexAttribArray(1);
+    /* Show OpenGL ES how the vertex array should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_verts);
 
-    /* Show OpenGL ES how the 'vbo_canvas_vertices' should be interpreted */
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_canvas_vertices);
-
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
-                          4 * sizeof(GLfloat), (void*)0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
-                          4 * sizeof(GLfloat), (void*)(2 * sizeof(GLfloat)));
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE,
+                          4 * sizeof(GLfloat), (void *)0);
 
     /* Bind the YUYV texture */
-    glBindTexture(tex_target, yuyv_tex);
+    glBindTexture(target, yuyv_tex);
 
     /* Convert YUYV texture */
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
-    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_size);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo);
+    glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_cnt);
 
-    glDrawElements(GL_TRIANGLES,
-                   tmp_size / sizeof(GLushort), GL_UNSIGNED_SHORT, 0);
+    glDrawElements(GL_TRIANGLES, tmp_cnt, GL_UNSIGNED_BYTE, 0);
 
     /* Wait until 'glDrawElements' finishes */
     glFinish();
 
     /* Unbind texture */
-    glBindTexture(tex_target, 0);
+    glBindTexture(target, 0);
 
     /* Unbind buffers */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    /* Disable attributes */
+    /* Disable attribute */
     glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
 }
 
-void gl_draw_text(GLuint prog, const char * p_text, float x,
-                  float y, color_t color, gl_resources_t res)
+void gl_draw_text(GLuint prog, const char * p_text,
+                  float x, float y, color_t color, gl_res_t res)
 {
     uint32_t index = 0;
 
@@ -621,13 +599,15 @@ void gl_draw_text(GLuint prog, const char * p_text, float x,
     int width  = 0;
     int height = 0;
 
+    GLint tmp_cnt = 0;
+
     GLint u_text_color = 0;
     GLint u_projection = 0;
 
     glyph_t * p_glyph = NULL;
 
     /* Check parameter */
-    assert(p_text != NULL);
+    assert((prog != 0) && (p_text != NULL));
 
     /* Enable blending */
     glEnable(GL_BLEND);
@@ -644,11 +624,11 @@ void gl_draw_text(GLuint prog, const char * p_text, float x,
     u_projection = glGetUniformLocation(prog, "projection");
     glUniformMatrix4fv(u_projection, 1, GL_FALSE, res.projection_mat[0]);
 
-    /* Enable attribute 'aVertex' since it's disabled by default */
+    /* Enable attribute 0 since it's disabled by default */
     glEnableVertexAttribArray(0);
 
-    /* Show OpenGL ES how the 'vbo_text_vertices' should be interpreted */
-    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_vertices);
+    /* Show OpenGL ES how the vertex array should be interpreted */
+    glBindBuffer(GL_ARRAY_BUFFER, res.vbo_text_verts);
 
     glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE,
                           4 * sizeof(GLfloat), (void *)0);
@@ -666,28 +646,33 @@ void gl_draw_text(GLuint prog, const char * p_text, float x,
             pos_x = x + p_glyph->offset_x;
             pos_y = y - (height - p_glyph->offset_y);
 
-            float text_vertices[6][4] =
+            float text_verts[4][4] =
             {
-                { pos_x        , pos_y + height, 0.0f, 0.0f },
-                { pos_x        , pos_y         , 0.0f, 1.0f },
-                { pos_x + width, pos_y         , 1.0f, 1.0f },
-                { pos_x        , pos_y + height, 0.0f, 0.0f },
-                { pos_x + width, pos_y         , 1.0f, 1.0f },
-                { pos_x + width, pos_y + height, 1.0f, 0.0f }
+                { pos_x        , pos_y + height, 0.0f, 0.0f }, /*Bottom-left */
+                { pos_x + width, pos_y + height, 1.0f, 0.0f }, /*Bottom-right*/
+                { pos_x + width, pos_y         , 1.0f, 1.0f }, /*Top-right   */
+                { pos_x        , pos_y         , 0.0f, 1.0f }  /*Top-left    */
             };
 
-            /* Update content of VBO 'vbo_text_vertices' */
-            glBufferSubData(GL_ARRAY_BUFFER, 0,
-                            sizeof(text_vertices), text_vertices);
+            /* Update VBO */
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(text_verts), text_verts);
 
+            /* Bind bitmap texture */
             glBindTexture(GL_TEXTURE_2D, p_glyph->tex_id);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
 
+            /* Draw texture */
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo);
+            glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER,
+                                   GL_BUFFER_SIZE, &tmp_cnt);
+
+            glDrawElements(GL_TRIANGLES, tmp_cnt, GL_UNSIGNED_BYTE, 0);
+
+            /* Prepare for the next character */
             x += p_glyph->advance;
         }
     }
 
-    /* Wait until 'glDrawArrays' finishes */
+    /* Wait until 'glDrawElements' finishes */
     glFinish();
 
     /* Unbind texture */
