@@ -459,7 +459,7 @@ gl_res_t gl_create_resources(uint32_t width,
     glm_ortho(0, width, 0, height, 0, 1, res.projection_mat);
 
     /* Generate glyph array */
-    ttf_generate(p_ttf, res.p_glyphs);
+    res.pp_glyphs = ttf_generate(p_ttf);
 
     /* Create vertex/index buffer objects and add data to it */
     glGenBuffers(1, &(res.vbo_rec_verts));
@@ -491,7 +491,7 @@ gl_res_t gl_create_resources(uint32_t width,
 void gl_delete_resources(gl_res_t res)
 {
     /* Delete glyph array */
-    ttf_delete_glyphs(res.p_glyphs);
+    ttf_delete_glyphs(res.pp_glyphs);
 
     /* Delete vertex buffer objects */
     glDeleteBuffers(1, &(res.vbo_rec_verts));
@@ -636,7 +636,7 @@ void gl_draw_text(GLuint prog, const char * p_text,
     /* Iterate through all characters */
     for (index = 0; index < strlen(p_text); index++)
     {
-        p_glyph = res.p_glyphs[(unsigned char)p_text[index]];
+        p_glyph = res.pp_glyphs[(unsigned char)p_text[index]];
 
         if (p_glyph != NULL)
         {

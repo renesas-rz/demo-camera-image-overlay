@@ -83,8 +83,8 @@ typedef struct
     /* Projection matrix */
     mat4 projection_mat;
 
-    /* An array containing information of glyphs */
-    glyph_t * p_glyphs[GLYPH_ARRAY_LEN];
+    /* An array of 'glyph_t' objects */
+    glyph_t ** pp_glyphs;
 
 } gl_res_t;
 

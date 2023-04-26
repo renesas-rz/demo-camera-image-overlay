@@ -61,17 +61,16 @@ typedef struct
  *                            FUNCTION DECLARATION                            *
  ******************************************************************************/
 
-/* Generate 'p_glyphs' from TrueType font 'p_file'.
- * Return true and fill 'p_glyphs' if the operation is successful.
+/* Generate an array of 'glyph_t' objects from TrueType font 'p_file'.
+ * If the operation is not successful, return NULL.
  *
  * Notes:
- *   - The elements in 'p_glyphs' is first 128 characters of ASCII table.
- *   - The elements in 'p_glyphs' must be freed when no longer used.
- *   - Some elements in 'p_glyphs' can be NULL even though the return
- *     value is true */
-bool ttf_generate(const char * p_file, glyph_t * p_glyphs[GLYPH_ARRAY_LEN]);
+ *   - The elements are first 128 characters of ASCII table.
+ *   - The elements are nullable.
+ *   - Both elements and array itself must be freed when no longer used */
+glyph_t ** ttf_generate(const char * p_file);
 
-/* Free elements in 'p_glyphs' */
-void ttf_delete_glyphs(glyph_t * p_glyphs[GLYPH_ARRAY_LEN]);
+/* Free array 'pp_glyphs' */
+void ttf_delete_glyphs(glyph_t ** pp_glyphs);
 
 #endif /* _TTF_H_ */
