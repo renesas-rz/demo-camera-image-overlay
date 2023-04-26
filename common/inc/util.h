@@ -48,11 +48,20 @@
  *   - ROUND_UP(1920, 32) -> 1920 */
 #define ROUND_UP(VAL, RND) (((VAL) + (RND) - 1) & (~((RND) - 1)))
 
+/* The number of microseconds per milisecond */
+#define USECS_PER_MSEC 1000
+
 /* The number of microseconds per second */
 #define USECS_PER_SEC 1000000
 
 /* Convert struct 'timeval' to microseconds */
-#define TIMEVAL_TO_USECS(T) ((int64_t)((T.tv_sec * USECS_PER_SEC) + T.tv_usec))
+#define TIMEVAL_TO_USECS(T) (((T).tv_sec * USECS_PER_SEC) + (T).tv_usec)
+
+/* Convert struct 'timeval' to miliseconds */
+#define TIMEVAL_TO_MSECS(T) ((1.0 * TIMEVAL_TO_USECS(T)) / USECS_PER_MSEC)
+
+/* Convert struct 'timeval' to seconds */
+#define TIMEVAL_TO_SECS(T) ((1.0 * TIMEVAL_TO_USECS(T)) / USECS_PER_SEC)
 
 /******************************************************************************
  *                            FUNCTION DECLARATION                            *

@@ -2,7 +2,8 @@
 CFLAGS = -Wall -Wextra -Werror
 
 # Add linking flags
-LDFLAGS = -lmmngr                                \
+LDFLAGS = -lm                                    \
+          -lmmngr                                \
           -lmmngrbuf                             \
           -lomxr_core                            \
           -lpthread                              \

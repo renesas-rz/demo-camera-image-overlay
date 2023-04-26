@@ -11,6 +11,7 @@
  *
  ******************************************************************************/
 
+#include <math.h>
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -481,6 +482,9 @@ gl_res_t gl_create_resources(uint32_t width,
     /* Set Viewport */
     glViewport(0, 0, width, height);
 
+    /* Create current time */
+    gettimeofday(&(res.start_tv), NULL);
+
     /* Unbind buffers */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -506,11 +510,45 @@ void gl_draw_rectangle(GLuint prog, gl_res_t res)
 {
     GLint tmp_cnt = 0;
 
+    float move  = 0.0f;
+    float angle = 0.0f;
+    float scale = 0.0f;
+
+    GLint u_transform = 0;
+    mat4 transform_mat = GLM_MAT4_IDENTITY_INIT;
+
+    struct timeval draw_tv;
+
+    /* The number of seconds since 'res' is created */
+    double secs = 0.0;
+
     /* Check parameter */
     assert(prog != 0);
 
     /* Use program object for drawing rectangle */
     glUseProgram(prog);
+
+    /* Get current time */
+    gettimeofday(&draw_tv, NULL);
+    secs = TIMEVAL_TO_SECS(draw_tv) - TIMEVAL_TO_SECS(res.start_tv);
+
+    /* Translate between -0.5 and 0.5 every 5 seconds */
+    move = sinf(secs * (2 * GLM_PI / 5)) / 2;
+
+    /* Rotate 45 degrees per second */
+    angle = secs * 45;
+
+    /* Scale between 1 and 1.5 every 2 seconds */
+    scale = ((sinf(secs * (2 * GLM_PI / 2)) + 1) / 4) + 1;
+
+    /* Calculate transformation matrix */
+    glm_translate(transform_mat, (vec3){ move, 0.0f, 0.0f });
+    glm_rotate(transform_mat, glm_rad(angle), GLM_ZUP);
+    glm_scale(transform_mat, (vec3){ scale, scale, 0.0f });
+
+    /* Set transformation matrix to uniform variable */
+    u_transform = glGetUniformLocation(prog, "transform");
+    glUniformMatrix4fv(u_transform, 1, GL_FALSE, transform_mat[0]);
 
     /* Enable attribute 0 since it's disabled by default */
     glEnableVertexAttribArray(0);

@@ -39,6 +39,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <sys/time.h>
+
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
@@ -85,6 +87,9 @@ typedef struct
 
     /* An array of 'glyph_t' objects */
     glyph_t ** pp_glyphs;
+
+    /* The time when struct 'gl_res_t' is created */
+    struct timeval start_tv;
 
 } gl_res_t;
 
