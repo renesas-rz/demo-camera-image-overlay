@@ -2,15 +2,13 @@
 CFLAGS = -Wall -Wextra -Werror
 
 # Add linking flags
-LDFLAGS = -lEGL            \
-          -lGLESv2         \
-          -lmmngr          \
-          -lmmngrbuf       \
-          -lomxr_core      \
-          -lpthread        \
-          -lm              \
-          -lwayland-client \
-          -lwayland-egl
+LDFLAGS = -lmmngr                                \
+          -lmmngrbuf                             \
+          -lomxr_core                            \
+          -lpthread                              \
+          $(shell pkg-config egl --libs)         \
+          $(shell pkg-config glesv2 --libs)      \
+          $(shell pkg-config wayland-egl --libs)
 
 # Define directories
 OBJ_DIR = ./objs
@@ -27,7 +25,7 @@ WL_SRC = xdg-shell-protocol.c
 WL_INC = xdg-shell-client-protocol.h
 
 # Get common source files
-CMN_SRCS = $(CMN_SRC_DIR)/$(WL_SRC) \
+CMN_SRCS = $(CMN_SRC_DIR)/$(WL_SRC)                 \
            $(shell find $(CMN_SRC_DIR) -name '*.c')
 
 # Get common object files
