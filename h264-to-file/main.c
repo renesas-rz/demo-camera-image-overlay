@@ -700,11 +700,20 @@ void * thread_input(void * p_param)
     EGLConfig config;
 
     /* OpenGL ES */
-    gl_resources_t gl_resources;
+    GLuint rec_prog = 0;
+    GLuint text_prog = 0;
+    GLuint yuyv_to_rgb_prog = 0;
+    GLuint rgb_to_nv12_prog = 0;
+
+    gl_resources_t gl_res;
 
     /* YUYV images and textures */
     EGLImageKHR * p_yuyv_imgs = NULL;
     GLuint      * p_yuyv_texs = NULL;
+
+    /* RGB textures and framebuffers */
+    GLuint * p_rgb_texs = NULL;
+    GLuint * p_rgb_fbs  = NULL;
 
     /* NV12 images, textures, and framebuffers */
     EGLImageKHR * p_nv12_imgs = NULL;
@@ -733,9 +742,23 @@ void * thread_input(void * p_param)
      *                        STEP 2: SET UP OPENGL ES                        *
      **************************************************************************/
 
+    /* Create program object for drawing rectangle */
+    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
+                                       "rectangle.fs.glsl");
+
+    /* Create program object for drawing text */
+    text_prog = gl_create_prog_from_src("text.vs.glsl", "text.fs.glsl");
+
+    /* Create program object for converting YUYV to RGB */
+    yuyv_to_rgb_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
+                                               "yuyv-to-rgb.fs.glsl");
+
+    /* Create program object for converting RGB to NV12 */
+    rgb_to_nv12_prog = gl_create_prog_from_src("rgb-to-nv12.vs.glsl",
+                                               "rgb-to-nv12.fs.glsl");
+
     /* Create resources needed for rendering */
-    gl_resources = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
-                                       FRAME_HEIGHT_IN_PIXELS);
+    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
@@ -769,11 +792,26 @@ void * thread_input(void * p_param)
     assert(p_yuyv_imgs != NULL);
 
     /* Create YUYV textures */
-    p_yuyv_texs = gl_create_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
+    p_yuyv_texs = gl_create_external_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
     assert(p_yuyv_texs != NULL);
 
     /**************************************************************************
-     *               STEP 4: CREATE TEXTURES FROM NV12 BUFFERS                *
+     *          STEP 4: CREATE FRAMEBUFFERS FROM EMPTY RGB TEXTURES           *
+     **************************************************************************/
+
+    /* Create RGB textures */
+    p_rgb_texs = gl_create_rgb_textures(FRAME_WIDTH_IN_PIXELS,
+                                        FRAME_HEIGHT_IN_PIXELS,
+                                        NULL, YUYV_BUFFER_COUNT);
+    assert(p_rgb_texs != NULL);
+
+    /* Create framebuffers */
+    p_rgb_fbs = gl_create_framebuffers(GL_TEXTURE_2D,
+                                       p_rgb_texs, YUYV_BUFFER_COUNT);
+    assert(p_rgb_fbs != NULL);
+
+    /**************************************************************************
+     *               STEP 5: CREATE TEXTURES FROM NV12 BUFFERS                *
      **************************************************************************/
 
     /* Create NV12 EGLImage objects */
@@ -785,19 +823,20 @@ void * thread_input(void * p_param)
     assert(p_nv12_imgs != NULL);
 
     /* Create NV12 textures */
-    p_nv12_texs = gl_create_textures(p_nv12_imgs, NV12_BUFFER_COUNT);
+    p_nv12_texs = gl_create_external_textures(p_nv12_imgs, NV12_BUFFER_COUNT);
     assert(p_nv12_texs != NULL);
 
     /**************************************************************************
-     *             STEP 5: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
+     *             STEP 6: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
      **************************************************************************/
 
     /* Create framebuffers */
-    p_nv12_fbs = gl_create_framebuffers(p_nv12_texs, NV12_BUFFER_COUNT);
+    p_nv12_fbs = gl_create_framebuffers(GL_TEXTURE_EXTERNAL_OES,
+                                        p_nv12_texs, NV12_BUFFER_COUNT);
     assert(p_nv12_fbs != NULL);
 
     /**************************************************************************
-     *                       STEP 6: THREAD'S MAIN LOOP                       *
+     *                       STEP 7: THREAD'S MAIN LOOP                       *
      **************************************************************************/
 
     while (is_running)
@@ -828,19 +867,29 @@ void * thread_input(void * p_param)
         assert(v4l2_dequeue_buf(p_data->cam_fd, &cam_buf));
 
         /* Bind framebuffer.
-         * All subsequent rendering operations will now render to NV12 texture
+         * All subsequent rendering operations will now render to RGB texture
          * which is linked to the framebuffer (see above):
          * https://learnopengl.com/Advanced-OpenGL/Framebuffers */
+        glBindFramebuffer(GL_FRAMEBUFFER, p_rgb_fbs[cam_buf.index]);
+
+        /* Convert YUYV texture to RGB texture */
+        gl_convert_yuyv(yuyv_to_rgb_prog, GL_TEXTURE_EXTERNAL_OES,
+                        p_yuyv_texs[cam_buf.index], gl_res);
+
+        /* Draw rectangle */
+        gl_draw_rectangle(rec_prog, gl_res);
+
+        /* Draw text */
+        gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLUE, gl_res);
+
+        /* Bind framebuffer.
+         * All subsequent rendering operations will now render to NV12 texture
+         * which is linked to the framebuffer (see above) */
         glBindFramebuffer(GL_FRAMEBUFFER, p_nv12_fbs[index]);
 
-        /* Convert YUYV texture to NV12 texture */
-        gl_convert_yuyv(p_yuyv_texs[cam_buf.index], gl_resources);
-
-        /* Draw rectangle on NV12 texture */
-        gl_draw_rectangle(gl_resources);
-
-        /* Draw text on NV12 texture */
-        gl_draw_text("This is a text", 25.0f, 25.0f, BLUE, gl_resources);
+        /* Convert RGB texture to NV12 texture */
+        gl_convert_yuyv(rgb_to_nv12_prog, GL_TEXTURE_2D,
+                        p_rgb_texs[cam_buf.index], gl_res);
 
         /* Reuse camera's buffer */
         assert(v4l2_enqueue_buf(p_data->cam_fd, cam_buf.index));
@@ -864,7 +913,7 @@ void * thread_input(void * p_param)
     }
 
     /**************************************************************************
-     *                       STEP 7: CLEAN UP OPENGL ES                       *
+     *                       STEP 8: CLEAN UP OPENGL ES                       *
      **************************************************************************/
 
     /* Delete framebuffers and NV12 textures */
@@ -873,15 +922,24 @@ void * thread_input(void * p_param)
     gl_delete_textures(p_nv12_texs, NV12_BUFFER_COUNT);
     egl_delete_images(display, p_nv12_imgs, NV12_BUFFER_COUNT);
 
+    /* Delete framebuffers and RGB textyres */
+    gl_delete_framebuffers(p_rgb_fbs, YUYV_BUFFER_COUNT);
+    gl_delete_textures(p_rgb_texs, YUYV_BUFFER_COUNT);
+
     /* Delete YUYV textures */
     gl_delete_textures(p_yuyv_texs, YUYV_BUFFER_COUNT);
     egl_delete_images(display, p_yuyv_imgs, YUYV_BUFFER_COUNT);
 
     /* Delete resources for OpenGL ES */
-    gl_delete_resources(gl_resources);
+    gl_delete_resources(gl_res);
+
+    glDeleteProgram(rec_prog);
+    glDeleteProgram(text_prog);
+    glDeleteProgram(yuyv_to_rgb_prog);
+    glDeleteProgram(rgb_to_nv12_prog);
 
     /**************************************************************************
-     *                          STEP 8: CLEAN UP EGL                          *
+     *                          STEP 9: CLEAN UP EGL                          *
      **************************************************************************/
 
     /* Delete EGL context */

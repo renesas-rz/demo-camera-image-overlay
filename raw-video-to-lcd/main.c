@@ -91,7 +91,11 @@ int main()
     EGLConfig egl_config;
 
     /* OpenGL ES */
-    gl_resources_t gl_resources;
+    GLuint rec_prog  = 0;
+    GLuint conv_prog = 0;
+    GLuint text_prog = 0;
+
+    gl_resources_t gl_res;
 
     /* For calculating FPS */
     struct timeval temp_tv;
@@ -199,9 +203,19 @@ int main()
      *                        STEP 6: SET UP OPENGL ES                        *
      **************************************************************************/
 
+    /* Create program object for drawing rectangle */
+    rec_prog = gl_create_prog_from_src("rectangle.vs.glsl",
+                                       "rectangle.fs.glsl");
+
+    /* Create program object for converting YUYV to RGB */
+    conv_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
+                                        "yuyv-to-rgb.fs.glsl");
+
+    /* Create program object for drawing text */
+    text_prog = gl_create_prog_from_src("text.vs.glsl", "text.fs.glsl");
+
     /* Create resources needed for rendering */
-    gl_resources = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
-                                       FRAME_HEIGHT_IN_PIXELS);
+    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
@@ -235,7 +249,7 @@ int main()
     assert(p_yuyv_imgs != NULL);
 
     /* Create YUYV textures */
-    p_yuyv_texs = gl_create_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
+    p_yuyv_texs = gl_create_external_textures(p_yuyv_imgs, YUYV_BUFFER_COUNT);
     assert(p_yuyv_texs != NULL);
 
     /**************************************************************************
@@ -281,13 +295,14 @@ int main()
         }
 
         /* Convert YUYV texture to RGB texture */
-        gl_convert_yuyv(p_yuyv_texs[cam_buf.index], gl_resources);
+        gl_convert_yuyv(conv_prog, GL_TEXTURE_EXTERNAL_OES,
+                        p_yuyv_texs[cam_buf.index], gl_res);
 
-        /* Draw rectangle on RGB texture */
-        gl_draw_rectangle(gl_resources);
+        /* Draw rectangle */
+        gl_draw_rectangle(rec_prog, gl_res);
 
-        /* Draw text on RGB texture */
-        gl_draw_text("This is a text", 25.0f, 25.0f, BLUE, gl_resources);
+        /* Draw text */
+        gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLUE, gl_res);
 
         /* Display to monitor */
         eglSwapBuffers(egl_display, egl_surface);
@@ -310,7 +325,11 @@ int main()
      **************************************************************************/
 
     /* Delete resources for OpenGL ES */
-    gl_delete_resources(gl_resources);
+    gl_delete_resources(gl_res);
+
+    glDeleteProgram(rec_prog);
+    glDeleteProgram(conv_prog);
+    glDeleteProgram(text_prog);
 
     /**************************************************************************
      *                         STEP 12: CLEAN UP EGL                          *

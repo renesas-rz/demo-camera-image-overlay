@@ -1,15 +1,15 @@
 #version 300 es
 
 layout (location = 0) in vec2 aPos;
-layout (location = 1) in vec3 aColor;
+layout (location = 1) in vec2 aRgbTexCoord;
 
-out vec3 ourColor;
+out vec2 rgbTexCoord;
 
 void main(void)
 {
     /* Just convert a 2D coordinate to 3D coordinate */
     gl_Position = vec4(aPos, 0.0, 1.0);
 
-    /* Output 'aColor' to the fragment shader */
-    ourColor = aColor;
+    /* Pass texture coordinate to fragment shader */
+    rgbTexCoord = aRgbTexCoord;
 }

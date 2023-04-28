@@ -207,7 +207,7 @@ bool gl_init_ext_funcs()
     return true;
 }
 
-GLuint gl_create_texture(EGLImageKHR image)
+GLuint gl_create_external_texture(EGLImageKHR image)
 {
     GLuint texture = 0;
 
@@ -239,7 +239,7 @@ GLuint gl_create_texture(EGLImageKHR image)
     return texture;
 }
 
-GLuint * gl_create_textures(EGLImageKHR * p_images, uint32_t count)
+GLuint * gl_create_external_textures(EGLImageKHR * p_images, uint32_t count)
 {
     GLuint * p_textures = NULL;
     uint32_t index = 0;
@@ -251,7 +251,74 @@ GLuint * gl_create_textures(EGLImageKHR * p_images, uint32_t count)
 
     for (index = 0; index < count; index++)
     {
-        p_textures[index] = gl_create_texture(p_images[index]);
+        p_textures[index] = gl_create_external_texture(p_images[index]);
+        if (p_textures[index] == 0)
+        {
+            printf("Error: Failed to create texture at index '%d'\n", index);
+            break;
+        }
+    }
+
+    if (index < count)
+    {
+        gl_delete_textures(p_textures, index);
+        return NULL;
+    }
+
+    return p_textures;
+}
+
+GLuint gl_create_rgb_texture(uint32_t width, uint32_t height, char * p_data)
+{
+    GLuint texture = 0;
+
+    /* Check parameters */
+    assert((width > 0) && (height > 0));
+
+    /* Create an RGB texture */
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width,
+                 height, 0, GL_RGB, GL_UNSIGNED_BYTE, p_data);
+
+    /* 'GL_NEAREST' is the default texture filtering method of OpenGL ES.
+     * When set to 'GL_NEAREST', OpenGL ES selects the texel (color and alpha
+     * values) which is closest to the texture coordinate */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* Clamp the coordinates between 0 and 1. Therefore, higher coordinates
+     * become clamped to the edge, resulting in a stretched edge pattern */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    /* Unbind texture */
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    return texture;
+}
+
+GLuint * gl_create_rgb_textures(uint32_t width, uint32_t height,
+                                char ** pp_data, uint32_t count)
+{
+    GLuint * p_textures = NULL;
+
+    uint32_t index = 0;
+    char * p_data = NULL;
+
+    /* Check parameters */
+    assert(count > 0);
+    assert((width > 0) && (height > 0));
+
+    p_textures = (GLuint *)malloc(count * sizeof(GLuint));
+
+    for (index = 0; index < count; index++)
+    {
+        /* Get data */
+        p_data = (pp_data == NULL) ? NULL : pp_data[index];
+
+        p_textures[index] = gl_create_rgb_texture(width, height, p_data);
         if (p_textures[index] == 0)
         {
             printf("Error: Failed to create texture at index '%d'\n", index);
@@ -282,7 +349,7 @@ void gl_delete_textures(GLuint * p_textures, uint32_t count)
     free(p_textures);
 }
 
-GLuint gl_create_framebuffer(GLuint texture)
+GLuint gl_create_framebuffer(GLenum tex_target, GLuint texture)
 {
     GLuint fb = 0;
 
@@ -294,8 +361,8 @@ GLuint gl_create_framebuffer(GLuint texture)
     glBindFramebuffer(GL_FRAMEBUFFER, fb);
 
     /* Attach texture to the color buffer of currently bound framebuffer */
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_EXTERNAL_OES, texture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,
+                           GL_COLOR_ATTACHMENT0, tex_target, texture, 0);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     {
@@ -311,7 +378,8 @@ GLuint gl_create_framebuffer(GLuint texture)
     return fb;
 }
 
-GLuint * gl_create_framebuffers(GLuint * p_textures, uint32_t count)
+GLuint * gl_create_framebuffers(GLuint tex_target,
+                                GLuint * p_textures, uint32_t count)
 {
     GLuint * p_fbs = NULL;
     uint32_t index = 0;
@@ -323,7 +391,7 @@ GLuint * gl_create_framebuffers(GLuint * p_textures, uint32_t count)
 
     for (index = 0; index < count; index++)
     {
-        p_fbs[index] = gl_create_framebuffer(p_textures[index]);
+        p_fbs[index] = gl_create_framebuffer(tex_target, p_textures[index]);
         if (p_fbs[index] == 0)
         {
             break;
@@ -395,19 +463,6 @@ gl_resources_t gl_create_resources(uint32_t frame_width, uint32_t frame_height)
         2, 3, 0,
     };
 
-    /* Set frame width and height */
-    res.frame_width  = frame_width;
-    res.frame_height = frame_height;
-
-    /* Create program objects */
-    res.rec_prog  = gl_create_prog_from_src(RECTANGLE_VS, RECTANGLE_FS);
-    res.conv_prog = gl_create_prog_from_src(YUYV_CONV_VS, YUYV_CONV_FS);
-    res.text_prog = gl_create_prog_from_src(TEXT_VS, TEXT_FS);
-
-    /* Get uniform variables for text program */
-    res.u_text_color = glGetUniformLocation(res.text_prog, "textColor");
-    res.u_projection = glGetUniformLocation(res.text_prog, "projection");
-
     /* Create projection matrix */
     glm_ortho(0, frame_width, 0, frame_height, 0, 1, res.projection_mat);
 
@@ -455,11 +510,6 @@ void gl_delete_resources(gl_resources_t res)
     /* Delete glyph array */
     ttf_delete_glyphs(res.p_glyphs);
 
-    /* Delete programs */
-    glDeleteProgram(res.rec_prog);
-    glDeleteProgram(res.conv_prog);
-    glDeleteProgram(res.text_prog);
-
     /* Delete vertex buffer objects */
     glDeleteBuffers(1, &(res.vbo_rec_vertices));
     glDeleteBuffers(1, &(res.vbo_canvas_vertices));
@@ -470,12 +520,12 @@ void gl_delete_resources(gl_resources_t res)
     glDeleteBuffers(1, &(res.ibo_canvas_indices));
 }
 
-void gl_draw_rectangle(gl_resources_t res)
+void gl_draw_rectangle(GLuint prog, gl_resources_t res)
 {
     GLint tmp_size = 0;
 
     /* Use program object for drawing rectangle */
-    glUseProgram(res.rec_prog);
+    glUseProgram(prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -510,7 +560,8 @@ void gl_draw_rectangle(gl_resources_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
+void gl_convert_yuyv(GLuint prog, GLenum tex_target,
+                     GLuint yuyv_tex, gl_resources_t res)
 {
     GLint tmp_size = 0;
 
@@ -518,7 +569,7 @@ void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
     assert(yuyv_tex != 0);
 
     /* Use program object for converting YUYV */
-    glUseProgram(res.conv_prog);
+    glUseProgram(prog);
 
     /* Enable attribute 'aPos' since it's disabled by default */
     glEnableVertexAttribArray(0);
@@ -535,7 +586,7 @@ void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
                           4 * sizeof(GLfloat), (void*)(2 * sizeof(GLfloat)));
 
     /* Bind the YUYV texture */
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, yuyv_tex);
+    glBindTexture(tex_target, yuyv_tex);
 
     /* Convert YUYV texture */
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo_canvas_indices);
@@ -548,7 +599,7 @@ void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
     glFinish();
 
     /* Unbind texture */
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    glBindTexture(tex_target, 0);
 
     /* Unbind buffers */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -559,8 +610,8 @@ void gl_convert_yuyv(GLuint yuyv_tex, gl_resources_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_draw_text(const char * p_text, float x, float y,
-                  color_t color, gl_resources_t res)
+void gl_draw_text(GLuint prog, const char * p_text, float x,
+                  float y, color_t color, gl_resources_t res)
 {
     uint32_t index = 0;
 
@@ -569,6 +620,9 @@ void gl_draw_text(const char * p_text, float x, float y,
 
     int width  = 0;
     int height = 0;
+
+    GLint u_text_color = 0;
+    GLint u_projection = 0;
 
     glyph_t * p_glyph = NULL;
 
@@ -580,13 +634,15 @@ void gl_draw_text(const char * p_text, float x, float y,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     /* Use program object for drawing text */
-    glUseProgram(res.text_prog);
+    glUseProgram(prog);
 
     /* Set text color to uniform variable */
-    glUniform3f(res.u_text_color, color[0], color[1], color[2]);
+    u_text_color = glGetUniformLocation(prog, "textColor");
+    glUniform3f(u_text_color, color[0], color[1], color[2]);
 
     /* Set projection matrix to uniform variable */
-    glUniformMatrix4fv(res.u_projection, 1, GL_FALSE, res.projection_mat[0]);
+    u_projection = glGetUniformLocation(prog, "projection");
+    glUniformMatrix4fv(u_projection, 1, GL_FALSE, res.projection_mat[0]);
 
     /* Enable attribute 'aVertex' since it's disabled by default */
     glEnableVertexAttribArray(0);
