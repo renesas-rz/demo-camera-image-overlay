@@ -1,23 +1,27 @@
-# demo-camera-image-overlay
+# Camera Image Overlay Demos
 
-## Table of contents
-* [General info](#general-info)
+## Table Of Contents
+
+* [General Info](#general-info)
 * [Used Technologies](#used-technologies)
-* [How to use](#how-to-use)
+* [How To Use](#how-to-use)
 * [History](#history)
 
-## General info
+## General Info
+
 These demo applications show how to use hardware acceleration and transfer data correctly on RZ/G2L and RZ/V2L Series Linux environment.  
 Hardware acceleration used in these demo applications include camera (USB), GPU, video encode, display, ...
-- h264-to-file: capture from camera, process by GPU, then encode to H264 video and write to file.
-- raw-video-to-lcd: capture from camera, process by GPU, then display to the screen.
-- (To be implemented) h264-to-rtsp: capture from camera, process by GPU, then encode to H264 video and stream over network by RTSP protocol
-- (To be implemented) video-to-lcd-and-file: capture from camera, process by GPU, then display to the screen and at the same time also encode to H264 file.
+
+* h264-to-file: capture from camera, process by GPU, then encode to H264 video and write to file.
+* raw-video-to-lcd: capture from camera, process by GPU, then display to the screen.
+* (To be implemented) h264-to-rtsp: capture from camera, process by GPU, then encode to H264 video and stream over network by RTSP protocol.
+* (To be implemented) video-to-lcd-and-file: capture from camera, process by GPU, then display to the screen and at the same time also encode to H264 file.
 
 GPU processing in these demo applications is overlaying a multi-color rectangle over the raw video image.  
 Depends on the application, GPU processing also perform format conversion for video image.
 
 ## Used Technologies
+
 * Camera (USB): V4L2, UVCVIDEO (include changes from Renesas to allow dmabuf output)
 * GPU processing: OpenGL ES, OpenGL ES SL
 * Video processing: H264 OMX encode, GStreamer
@@ -26,19 +30,23 @@ Depends on the application, GPU processing also perform format conversion for vi
 Note: OMX encode and GPU processing use Renesas proprietary libraries.  
 Other technologies are based on opensource software, but have Renesas' additional changes to improve control over hardware.
 
-## How to use
-- Compile:  
+## How To Use
+
+* Compile:  
   Source the SDK first (refer to Renesas documents Startup Guide or Release Note).  
   Then compile these demos with make.
+
+  ```bash
+  source /opt/poky/3.1.17/environment-setup-aarch64-poky-linux
+  cd demo-camera-image-overlay/
+  make
   ```
-  $ source /opt/poky/3.1.17/environment-setup-aarch64-poky-linux
-  $ cd demo-camera-image-overlay/
-  $ make
-  ```
-- Execute:  
+
+* Execute:  
   Copy whole repository to rootfs of the board.
   Run the sh script in application directory. Stop running by Ctrl-C.
-  ```
+
+  ```bash
   root@smarc-rzg2l:~/raw-video-to-lcd# ./raw-video-to-lcd.sh
   Removing 'uvcvideo' from kernel
   Adding 'uvcvideo' to kernel
@@ -55,12 +63,12 @@ Other technologies are based on opensource software, but have Renesas' additiona
     Pixel format: 'YUYV'
     Scan type: 'Progressive'
   V4L2 framerate: '30.0'
+  ...
   ```
 
 ## History
-- Version 2.0: Add first version of raw-video-to-lcd application (about 30fps)
 
-  https://user-images.githubusercontent.com/14919751/230885849-34d9fa5c-3548-4c0b-873f-af82891d26bf.mp4
-- Version 1.2: Improve performance by allowing multi-threads (separate input and ouput threads).
-- Version 1.1: Update to allow encode multiple frames (output 1 H264 video file), and improve performance by allowing multiple buffers.
-- Version 1.0: First version of h264-to-file application, only encode 1 frame, output 3 raw frames and 1 H264 frame.
+* Version 2.0: Add first version of raw-video-to-lcd application.
+* Version 1.2: Improve performance by allowing multi-threads (separate input and ouput threads).
+* Version 1.1: Update to allow encode multiple frames (output 1 H264 video file), and improve performance by allowing multiple buffers.
+* Version 1.0: First version of h264-to-file application, only encode 1 frame, output 3 raw frames and 1 H264 frame.
