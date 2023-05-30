@@ -1,6 +1,9 @@
 #version 300 es
 #extension GL_EXT_YUV_target : require
 
+/* Copyright (c) 2023 Renesas Electronics Corp.
+ * SPDX-License-Identifier: MIT-0 */
+
 precision mediump float;
 
 uniform __samplerExternal2DY2YEXT yuyvTexture;

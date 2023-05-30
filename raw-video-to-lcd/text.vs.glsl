@@ -1,5 +1,8 @@
 #version 300 es
 
+/* Copyright (c) 2023 Renesas Electronics Corp.
+ * SPDX-License-Identifier: MIT-0 */
+
 layout (location = 0) in vec4 aVertex; /* <vec2 pos, vec2 tex> */
 
 out vec2 texCoords;

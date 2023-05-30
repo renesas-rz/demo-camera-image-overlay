@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Copyright (c) 2023 Renesas Electronics Corp.
+# SPDX-License-Identifier: MIT-0
+
 # --------- GLOBAL ---------
 
 UVC_DRIVER="uvcvideo"

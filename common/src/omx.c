@@ -1,3 +1,6 @@
+/* Copyright (c) 2023 Renesas Electronics Corp.
+ * SPDX-License-Identifier: MIT-0 */
+
 /*******************************************************************************
  * FILENAME: omx.c
  *

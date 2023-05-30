@@ -1,5 +1,8 @@
 #version 300 es
 
+/* Copyright (c) 2023 Renesas Electronics Corp.
+ * SPDX-License-Identifier: MIT-0 */
+
 precision mediump float;
 
 uniform sampler2D text;
