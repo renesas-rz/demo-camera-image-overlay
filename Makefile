@@ -55,7 +55,7 @@ all: $(TTFS) $(APPS)
 $(TTFS): %: $(TTF_DIR)/$(TTF_FILE)
 	install -m 664 $^ $@
 
-$(APPS): %: $(OBJ_DIR)/%.o $(CMN_OBJS)
+$(APPS): %: $(CMN_OBJS) $(OBJ_DIR)/%.o
 	$(CC) $(LDFLAGS) $^ -o $@
 
 $(OBJ_DIR)/%.o: %.c
