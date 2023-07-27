@@ -301,8 +301,8 @@ int main()
         }
 
         /* Convert YUYV texture to RGB texture */
-        gl_convert_yuyv(conv_prog, GL_TEXTURE_EXTERNAL_OES,
-                        p_yuyv_texs[cam_buf.index], gl_res);
+        gl_render_texture(conv_prog, GL_TEXTURE_EXTERNAL_OES,
+                          p_yuyv_texs[cam_buf.index], gl_res);
 
         /* Draw rectangle */
         gl_draw_rectangle(rec_prog, gl_res);

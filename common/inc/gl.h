@@ -29,7 +29,7 @@
  *   gl_delete_resources
  *
  *   gl_draw_rectangle
- *   gl_convert_yuyv
+ *   gl_render_texture
  *   gl_draw_text
  *
  * AUTHOR: RVC       START DATE: 15/03/2023
@@ -179,13 +179,13 @@ void gl_delete_resources(gl_res_t res);
  * https://en.wikibooks.org/wiki/OpenGL_Programming */
 void gl_draw_rectangle(GLuint prog, gl_res_t res);
 
-/* Convert YUYV texture.
+/* Render texture.
  * The destination format is determined by 'prog' and framebuffer's layout.
  *
  * Note: 'target' should be one of the following values:
- *   - GL_TEXTURE_2D: If 'yuyv_tex' is an RGB texture.
- *   - GL_TEXTURE_EXTERNAL_OES: If 'yuyv_tex' is an external texture */
-void gl_convert_yuyv(GLuint prog, GLenum target, GLuint yuyv_tex, gl_res_t res);
+ *   - GL_TEXTURE_2D: If 'tex' is an RGB texture.
+ *   - GL_TEXTURE_EXTERNAL_OES: If 'tex' is an external texture */
+void gl_render_texture(GLuint prog, GLenum target, GLuint tex, gl_res_t res);
 
 /* Draw text.
  * https://learnopengl.com/In-Practice/Text-Rendering */

@@ -10,6 +10,7 @@
 #include <pthread.h>
 
 #include "gl.h"
+#include "wl.h"
 #include "egl.h"
 #include "omx.h"
 #include "util.h"
@@ -20,6 +21,8 @@
 /******************************************************************************
  *                              MACRO VARIABLES                               *
  ******************************************************************************/
+
+#define WINDOW_TITLE "Video to LCD and file"
 
 #define FONT_FILE "LiberationSans-Regular.ttf"
 
@@ -698,15 +701,23 @@ void * thread_input(void * p_param)
     int index = -1;
     OMX_BUFFERHEADERTYPE * p_buf = NULL;
 
-    /* EGL display, config, and context */
+    /* Wayland display and window */
+    wl_display_t * p_wl_display = NULL;
+    wl_window_t  * p_wl_window = NULL;
+
+    int ret = 0;
+
+    /* EGL display, config, surface, and context */
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLContext context = EGL_NO_CONTEXT;
+    EGLSurface surface = EGL_NO_SURFACE;
 
     EGLConfig config;
 
     /* OpenGL ES */
     GLuint rec_prog = 0;
     GLuint text_prog = 0;
+    GLuint render_tex_prog = 0;
     GLuint yuyv_to_rgb_prog = 0;
     GLuint rgb_to_nv12_prog = 0;
 
@@ -729,22 +740,43 @@ void * thread_input(void * p_param)
     assert(p_data != NULL);
 
     /**************************************************************************
-     *                           STEP 1: SET UP EGL                           *
+     *                         STEP 1: SET UP WAYLAND                         *
+     **************************************************************************/
+
+    /* Connect to Wayland display */
+    p_wl_display = wl_connect_display();
+    assert(p_wl_display != NULL);
+
+    /* Create Wayland window */
+    p_wl_window = wl_create_window(p_wl_display, WINDOW_TITLE,
+                                                 FRAME_WIDTH_IN_PIXELS,
+                                                 FRAME_HEIGHT_IN_PIXELS);
+    assert(p_wl_window != NULL);
+
+    /**************************************************************************
+     *                           STEP 2: SET UP EGL                           *
      **************************************************************************/
 
     /* Connect to EGL display */
-    display = egl_connect_display(EGL_DEFAULT_DISPLAY, &config);
+    display = egl_connect_display((EGLNativeDisplayType)
+                                  p_wl_display->p_display, &config);
     assert(display != EGL_NO_DISPLAY);
 
+    /* Create EGL window surface */
+    surface = eglCreateWindowSurface(display, config,
+                                     (EGLNativeWindowType)
+                                     p_wl_window->p_egl_window, NULL);
+    assert(surface != EGL_NO_SURFACE);
+
     /* Create and bind EGL context */
-    context = egl_create_context(display, config, EGL_NO_SURFACE);
+    context = egl_create_context(display, config, surface);
     assert(context != EGL_NO_CONTEXT);
 
     /* Initialize EGL extension functions */
     assert(egl_init_ext_funcs(display));
 
     /**************************************************************************
-     *                        STEP 2: SET UP OPENGL ES                        *
+     *                        STEP 3: SET UP OPENGL ES                        *
      **************************************************************************/
 
     /* Create program object for drawing rectangle */
@@ -753,6 +785,10 @@ void * thread_input(void * p_param)
 
     /* Create program object for drawing text */
     text_prog = gl_create_prog_from_src("text.vs.glsl", "text.fs.glsl");
+
+    /* Create program object for rendering RGB texture */
+    render_tex_prog = gl_create_prog_from_src("render-rgb.vs.glsl",
+                                              "render-rgb.fs.glsl");
 
     /* Create program object for converting YUYV to RGB */
     yuyv_to_rgb_prog = gl_create_prog_from_src("yuyv-to-rgb.vs.glsl",
@@ -770,7 +806,7 @@ void * thread_input(void * p_param)
     assert(gl_init_ext_funcs());
 
     /**************************************************************************
-     *               STEP 3: CREATE TEXTURES FROM YUYV BUFFERS                *
+     *               STEP 4: CREATE TEXTURES FROM YUYV BUFFERS                *
      **************************************************************************/
 
     /* Exit program if size of YUYV buffer is not aligned to page size.
@@ -802,7 +838,7 @@ void * thread_input(void * p_param)
     assert(p_yuyv_texs != NULL);
 
     /**************************************************************************
-     *          STEP 4: CREATE FRAMEBUFFERS FROM EMPTY RGB TEXTURES           *
+     *          STEP 5: CREATE FRAMEBUFFERS FROM EMPTY RGB TEXTURES           *
      **************************************************************************/
 
     /* Create RGB textures */
@@ -817,7 +853,7 @@ void * thread_input(void * p_param)
     assert(p_rgb_fbs != NULL);
 
     /**************************************************************************
-     *               STEP 5: CREATE TEXTURES FROM NV12 BUFFERS                *
+     *               STEP 6: CREATE TEXTURES FROM NV12 BUFFERS                *
      **************************************************************************/
 
     /* Create NV12 EGLImage objects */
@@ -833,7 +869,7 @@ void * thread_input(void * p_param)
     assert(p_nv12_texs != NULL);
 
     /**************************************************************************
-     *             STEP 6: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
+     *             STEP 7: CREATE FRAMEBUFFERS FROM NV12 TEXTURES             *
      **************************************************************************/
 
     /* Create framebuffers */
@@ -842,7 +878,7 @@ void * thread_input(void * p_param)
     assert(p_nv12_fbs != NULL);
 
     /**************************************************************************
-     *                       STEP 7: THREAD'S MAIN LOOP                       *
+     *                       STEP 8: THREAD'S MAIN LOOP                       *
      **************************************************************************/
 
     while (is_running)
@@ -868,6 +904,8 @@ void * thread_input(void * p_param)
         /* Get buffer's index */
         index = omx_get_index(p_buf, p_data->pp_bufs, NV12_BUFFER_COUNT);
         assert(index != -1);
+  
+        ret = wl_display_dispatch_pending(p_wl_display->p_display);
 
         /* Receive camera's buffer */
         assert(v4l2_dequeue_buf(p_data->cam_fd, &cam_buf));
@@ -888,6 +926,16 @@ void * thread_input(void * p_param)
         /* Draw text */
         gl_draw_text(text_prog, "This is a text", 25.0f, 25.0f, BLACK, gl_res);
 
+        /* Bind back to default framebuffer */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        /* Render RGB frame */
+        gl_render_texture(render_tex_prog, GL_TEXTURE_2D,
+                          p_rgb_texs[cam_buf.index], gl_res);
+
+        /* Display to monitor */
+        eglSwapBuffers(display, surface);
+
         /* Bind framebuffer.
          * All subsequent rendering operations will now render to
          * NV12 texture which is linked to the framebuffer (see above) */
@@ -906,7 +954,7 @@ void * thread_input(void * p_param)
         /* Section 6.14.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
         p_buf->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
 
-        if (g_int_signal)
+        if (g_int_signal || g_window_closed || (ret == -1))
         {
             p_buf->nFlags |= OMX_BUFFERFLAG_EOS;
 
@@ -919,7 +967,7 @@ void * thread_input(void * p_param)
     }
 
     /**************************************************************************
-     *                       STEP 8: CLEAN UP OPENGL ES                       *
+     *                       STEP 9: CLEAN UP OPENGL ES                       *
      **************************************************************************/
 
     /* Delete framebuffers and NV12 textures */
@@ -941,18 +989,32 @@ void * thread_input(void * p_param)
 
     glDeleteProgram(rec_prog);
     glDeleteProgram(text_prog);
+    glDeleteProgram(render_tex_prog);
     glDeleteProgram(yuyv_to_rgb_prog);
     glDeleteProgram(rgb_to_nv12_prog);
 
     /**************************************************************************
-     *                          STEP 9: CLEAN UP EGL                          *
+     *                          STEP 10: CLEAN UP EGL                         *
      **************************************************************************/
 
     /* Delete EGL context */
     eglDestroyContext(display, context);
 
+    /* Delete EGL window surface */
+    eglDestroySurface(display, surface);
+
     /* Close connection to EGL display */
     egl_disconnect_display(display);
+
+    /**************************************************************************
+     *                       STEP 11: CLEAN UP WAYLAND                        *
+     **************************************************************************/
+
+    /* Delete Wayland window */
+    wl_delete_window(p_wl_window);
+
+    /* Close connection to Wayland display */
+    wl_disconnect_display(p_wl_display);
 
     printf("Thread '%s' exited\n", __FUNCTION__);
     return NULL;

@@ -587,14 +587,14 @@ void gl_draw_rectangle(GLuint prog, gl_res_t res)
     glDisableVertexAttribArray(1);
 }
 
-void gl_convert_yuyv(GLuint prog, GLenum target, GLuint yuyv_tex, gl_res_t res)
+void gl_render_texture(GLuint prog, GLenum target, GLuint tex, gl_res_t res)
 {
     GLint tmp_cnt = 0;
 
     /* Check parameter */
-    assert((prog != 0) && (yuyv_tex != 0));
+    assert((prog != 0) && (tex != 0));
 
-    /* Use program object for converting YUYV */
+    /* Use program object for rendering texture 'tex' */
     glUseProgram(prog);
 
     /* Enable attribute 0 since it's disabled by default */
@@ -606,10 +606,10 @@ void gl_convert_yuyv(GLuint prog, GLenum target, GLuint yuyv_tex, gl_res_t res)
     glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE,
                           4 * sizeof(GLfloat), (void *)0);
 
-    /* Bind the YUYV texture */
-    glBindTexture(target, yuyv_tex);
+    /* Bind the texture */
+    glBindTexture(target, tex);
 
-    /* Convert YUYV texture */
+    /* Render the texture */
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res.ibo);
     glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &tmp_cnt);
 
