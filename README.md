@@ -49,7 +49,7 @@ The demos explain how to overlay raw video images with text and 2D shape (such a
 | ----------- | ----------- |
 | h264-to-file | Capture video images from camera -> Overlay the images with text and rectangle -> Encode the images to H.264 data -> Write H.264 data to file. |
 | raw-video-to-lcd | Capture video images from camera -> Overlay the images with text and rectangle -> Show the images on Wayland/Weston Desktop. |
-| video-to-lcd-and-file | **(To be implemented)** Same as _h264-to-file_ and _raw-video-to-lcd_. The video images are both shown on Wayland/Weston Desktop and encoded to H.264 data which is written to file. |
+| video-to-lcd-and-file | Same as _h264-to-file_ and _raw-video-to-lcd_. The video images are both shown on Wayland/Weston Desktop and encoded to H.264 data which is written to file. |
 | h264-to-rtsp | **(To be implemented)** Capture video images from camera -> Overlay the images with text and rectangle -> Encode the images to H.264 data -> Stream with RTSP protocol. |
 
 Note: Camera capture, text/graphics overlay, H.264 encoding, and Wayland/Weston display are hardware accelerated.
@@ -65,6 +65,12 @@ Note: Camera capture, text/graphics overlay, H.264 encoding, and Wayland/Weston 
 ![Workflow of demo raw-video-to-lcd](docs/images/raw-video-to-lcd-workflow.png)
 
 ![raw-video-to-lcd-output.mp4](docs/videos/raw-video-to-lcd-output.mp4)
+
+### Demo video-to-lcd-and-file
+
+![Workflow of demo video-to-lcd-and-file](docs/images/video-to-lcd-and-file-workflow.png)
+
+For output videos, please refer to _h264-to-file_ and _raw-video-to-lcd_ demos.
 
 ### Source code
 
@@ -90,6 +96,12 @@ Note: Camera capture, text/graphics overlay, H.264 encoding, and Wayland/Weston 
 | raw-video-to-lcd | yuyv-to-rgb.vs.glsl, yuyv-to-rgb.fs.glsl | Convert YUYV textures to RGB. |
 | raw-video-to-lcd | rectangle.vs.glsl, rectangle.fs.glsl | Draw rectangle on RGB texture. |
 | raw-video-to-lcd | text.vs.glsl, text.fs.glsl | Draw text on RGB texture. |
+| video-to-lcd-and-file | video-to-lcd-and-file.sh, main.c | Demo _video-to-lcd-and-file_. The script file will run the demo after reprobing uvcvideo with parameter _allocators=1_. Without it, video frames will contain noises. |
+| video-to-lcd-and-file | yuyv-to-rgb.vs.glsl, yuyv-to-rgb.fs.glsl | Convert YUYV textures to RGB. |
+| video-to-lcd-and-file | rectangle.vs.glsl, rectangle.fs.glsl | Draw rectangle on RGB texture. |
+| video-to-lcd-and-file | text.vs.glsl, text.fs.glsl | Draw text on RGB texture. |
+| video-to-lcd-and-file | render-rgb.vs.glsl, render-rgb.fs.glsl | Draw RGB texture on default framebuffer. |
+| video-to-lcd-and-file | rgb-to-nv12.vs.glsl, rgb-to-nv12.fs.glsl | Convert RGB textures to NV12. |
 
 ## How to compile demos
 
@@ -106,7 +118,7 @@ Note: Camera capture, text/graphics overlay, H.264 encoding, and Wayland/Weston 
   user@ubuntu:~/demo-camera-image-overlay$ make
   ```
 
-* After compilation, the demos should be in directories _h264-to-file_ and _raw-video-to-lcd_.
+* After compilation, the demos should be in directories _h264-to-file_, _raw-video-to-lcd_, and _video-to-lcd-and-file_.
 
   ```bash
   h264-to-file/
@@ -132,6 +144,21 @@ Note: Camera capture, text/graphics overlay, H.264 encoding, and Wayland/Weston 
   ├── yuyv-to-rgb.fs.glsl
   ├── yuyv-to-rgb.vs.glsl
   └── LiberationSans-Regular.ttf
+
+  video-to-lcd-and-file/
+  ├── LiberationSans-Regular.ttf
+  ├── main
+  ├── rectangle.fs.glsl
+  ├── rectangle.vs.glsl
+  ├── render-rgb.fs.glsl
+  ├── render-rgb.vs.glsl
+  ├── rgb-to-nv12.fs.glsl
+  ├── rgb-to-nv12.vs.glsl
+  ├── text.fs.glsl
+  ├── text.vs.glsl
+  ├── video-to-lcd-and-file.sh
+  ├── yuyv-to-rgb.fs.glsl
+  └── yuyv-to-rgb.vs.glsl
   ```
 
 ## How to run demos
@@ -238,6 +265,10 @@ Then, run the following commands:
 
 * The demo should be shown on Wayland/Weston desktop. You can press Ctrl-C to exit the demo.
 
+### video-to-lcd-and-file
+
+* Please refer to [h264-to-file](#h264-to-file) and [raw-video-to-lcd](#raw-video-to-lcd).
+
 ## Revision history
 
 | Version | Date | Summary |
@@ -247,3 +278,4 @@ Then, run the following commands:
 | 1.2 | Mar 14, 2023 | Convert demo _h264-to-file_ to multi-threaded application for better performance. |
 | 2.0 | Apr 06, 2023 | Add demo _raw-video-to-lcd_. |
 | 2.1 | Apr 26, 2023 | Render text and transform rectangle. |
+| 3.0 | Jul 31, 2023 | Add demo _video-to-lcd-and-file_. |
