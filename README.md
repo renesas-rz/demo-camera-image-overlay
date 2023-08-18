@@ -9,7 +9,8 @@
 5. [Software](#software)
 6. [How to compile demos](#how-to-compile-demos)
 7. [How to run demos](#how-to-run-demos)
-8. [Revision history](#revision-history)
+8. [FAQ](#faq)
+9. [Revision history](#revision-history)
 
 ## Target devices
 
@@ -105,7 +106,8 @@ For output videos, please refer to _h264-to-file_ and _raw-video-to-lcd_ demos.
 
 ## How to compile demos
 
-* Source the environment setup script of SDK:
+* Source the environment setup script of SDK.  
+  **Note:** The SDK must be generated from either _core-image-weston_ or _core-image-qt_:
 
   ```bash
   user@ubuntu:~$ source /path/to/sdk/environment-setup-aarch64-poky-linux
@@ -268,6 +270,21 @@ Then, run the following commands:
 ### video-to-lcd-and-file
 
 * Please refer to [h264-to-file](#h264-to-file) and [raw-video-to-lcd](#raw-video-to-lcd).
+
+## FAQ
+
+* Q1: How to fix the below compilation error?
+
+  ```console
+  user@ubuntu:~/demo-camera-image-overlay$ make
+  ...
+  wayland-scanner code /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml common/src/xdg-shell-protocol.c
+  Could not open input file: No such file or directory
+  Makefile:68: recipe for target 'common/src/xdg-shell-protocol.c' failed
+  make: *** [common/src/xdg-shell-protocol.c] Error 1
+  ```
+
+* A1: The _make_ command needs the _wayland-scanner_ tool to generate the _xdg-shell-protocol.c_ file from the _xdg-shell.xml_ file. But the XML file doesn't exist, so the tool crashes and the compilation stops. To fix this, make sure you are using the SDK generated from _core-image-weston_ or _core-image-qt_.
 
 ## Revision history
 
