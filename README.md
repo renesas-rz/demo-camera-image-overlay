@@ -106,8 +106,14 @@ For output videos, please refer to _h264-to-file_ and _raw-video-to-lcd_ demos.
 
 ## How to compile demos
 
-* Source the environment setup script of SDK.  
-  **Note:** The SDK must be generated from either _core-image-weston_ or _core-image-qt_:
+> **Note 1:** The SDK must be generated from either _core-image-weston_ or _core-image-qt_.  
+> **Note 2:** If using SDK v3.0.4 or older, please add the following to _build/conf/local.conf_. Then, generate the SDK.
+> ```c
+> DISTRO_FEATURES_NATIVESDK_append = " wayland"
+> DISTRO_FEATURES_NATIVESDK_remove = " x11"
+> ```
+
+* Source the environment setup script of SDK:
 
   ```bash
   user@ubuntu:~$ source /path/to/sdk/environment-setup-aarch64-poky-linux
