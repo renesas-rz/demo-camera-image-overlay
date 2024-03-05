@@ -232,7 +232,7 @@ Then, run the following commands:
 * You can open it with [Media Classic Player](https://mpc-hc.org/) on Windows (recommended), [Videos application](https://manpages.ubuntu.com/manpages/trusty/man1/totem.1.html) on Ubuntu, or GStreamer pipeline on [VLP environment](#supported-environments) as below:
 
   ```bash
-  gst-launch-1.0 filesrc location=out-h264-640x480.264 ! h264parse ! omxh264dec ! videorate ! video/x-raw, framerate=30/1 ! waylandsink
+  gst-launch-1.0 filesrc location=out-h264-640x480.264 ! h264parse ! omxh264dec ! waylandsink
   ```
 
 ### raw-video-to-lcd

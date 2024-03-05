@@ -167,14 +167,13 @@ bool omx_get_bitrate_ctrl(OMX_HANDLETYPE handle, OMX_U32 port_idx,
 
 bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
                          OMX_U32 frame_width, OMX_U32 frame_height,
-                         OMX_COLOR_FORMATTYPE color_fmt, OMX_U32 framerate)
+                         OMX_COLOR_FORMATTYPE color_fmt)
 {
     bool is_success = false;
     OMX_PARAM_PORTDEFINITIONTYPE in_port;
 
     /* Check parameters */
     assert((frame_width > 0) && (frame_height > 0));
-    assert(framerate > 0);
 
     /* Get input port */
     if (omx_get_port(handle, 0, &in_port) == true)
@@ -185,7 +184,6 @@ bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
         in_port.format.video.nStride       = OMX_STRIDE(frame_width);
         in_port.format.video.nSliceHeight  = OMX_SLICE_HEIGHT(frame_height);
         in_port.format.video.eColorFormat  = color_fmt;
-        in_port.format.video.xFramerate    = framerate << 16; /* Q16 format */
 
         if (OMX_ErrorNone ==
             OMX_SetParameter(handle, OMX_IndexParamPortDefinition, &in_port))
@@ -202,51 +200,68 @@ bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
     return is_success;
 }
 
-bool omx_set_out_port_fmt(OMX_HANDLETYPE handle, OMX_U32 bitrate,
-                          OMX_VIDEO_CODINGTYPE compression_fmt)
+bool omx_set_out_port_fmt(OMX_HANDLETYPE hdl, OMX_U32 bitrate,
+                          OMX_VIDEO_CODINGTYPE compression_fmt,
+                          OMX_U32 framerate)
 {
     bool b_set_fmt_ok     = false;
+    bool b_set_fps_ok     = false;
     bool b_set_bitrate_ok = false;
 
     OMX_VIDEO_PARAM_BITRATETYPE ctrl;
     OMX_PARAM_PORTDEFINITIONTYPE out_port;
+    OMXR_MC_VIDEO_PARAM_AVC_VUI_PROPERTY vui;
 
-    /* Check parameter */
-    assert(bitrate > 0);
+    /* Check parameters */
+    assert((bitrate > 0) && (framerate > 0));
 
     /* Get output port */
-    if (omx_get_port(handle, 1, &out_port) == true)
+    if (omx_get_port(hdl, 1, &out_port) == true)
     {
         /* Configure and set compression format to output port */
         out_port.format.video.eCompressionFormat = compression_fmt;
-
         if (OMX_ErrorNone ==
-            OMX_SetParameter(handle, OMX_IndexParamPortDefinition, &out_port))
+            OMX_SetParameter(hdl, OMX_IndexParamPortDefinition, &out_port))
         {
             b_set_fmt_ok = true;
+        }
+
+        /* Configure and set framerate to VUI property */
+        OMX_INIT_STRUCTURE(&vui);
+
+        vui.nPortIndex = 1;
+        vui.u32NumUnitsInTick = 1;
+        vui.u32TimeScale = framerate * 2; /* double target framerate */
+        vui.bFixedFrameRateFlag = OMX_TRUE;
+        vui.bTimingInfoPresentFlag = OMX_TRUE;
+
+        if (OMX_ErrorNone ==
+            OMX_SetParameter(hdl, OMXR_MC_IndexParamVideoAVCVuiProperty, &vui))
+        {
+            b_set_fps_ok = true;
         }
     }
 
     /* Get video encode bitrate control for output port */
-    if (omx_get_bitrate_ctrl(handle, 1, &ctrl) == true)
+    if (omx_get_bitrate_ctrl(hdl, 1, &ctrl) == true)
     {
         /* Configure and set bitrate to output port */
         ctrl.nTargetBitrate = bitrate;
         ctrl.eControlRate   = OMX_Video_ControlRateConstant;
 
         if (OMX_ErrorNone ==
-            OMX_SetParameter(handle, OMX_IndexParamVideoBitrate, &ctrl))
+            OMX_SetParameter(hdl, OMX_IndexParamVideoBitrate, &ctrl))
         {
             b_set_bitrate_ok = true;
         }
     }
 
-    if (!b_set_fmt_ok || !b_set_bitrate_ok)
+    if (!b_set_fmt_ok || !b_set_bitrate_ok || !b_set_fps_ok)
     {
         printf("Error: Failed to set output port\n");
     }
 
-    return (b_set_fmt_ok && b_set_bitrate_ok);
+    return (b_set_fmt_ok && b_set_bitrate_ok && b_set_fps_ok);
 }
 
 bool omx_set_port_buf_cnt(OMX_HANDLETYPE handle,

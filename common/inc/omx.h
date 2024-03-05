@@ -301,13 +301,14 @@ bool omx_get_bitrate_ctrl(OMX_HANDLETYPE handle, OMX_U32 port_idx,
  * Return true if successful. Otherwise, return false */
 bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
                          OMX_U32 frame_width, OMX_U32 frame_height,
-                         OMX_COLOR_FORMATTYPE color_fmt, OMX_U32 framerate);
+                         OMX_COLOR_FORMATTYPE color_fmt);
 
 /* Set H.264 format and bitrate to output port's structure
  * 'OMX_PARAM_PORTDEFINITIONTYPE'.
  * Return true if successful. Otherwise, return false */
 bool omx_set_out_port_fmt(OMX_HANDLETYPE handle, OMX_U32 bitrate,
-                          OMX_VIDEO_CODINGTYPE compression_fmt);
+                          OMX_VIDEO_CODINGTYPE compression_fmt,
+                          OMX_U32 framerate);
 
 /* Set 'buf_cnt' buffers to port 'port_idx'.
  * Return true if successful. Otherwise, return false */

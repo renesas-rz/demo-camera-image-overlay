@@ -364,12 +364,13 @@ int main()
     /* Configure input port */
     assert(omx_set_in_port_fmt(handle,
                                FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
-                               OMX_COLOR_FormatYUV420SemiPlanar, FRAMERATE));
+                               OMX_COLOR_FormatYUV420SemiPlanar));
 
     assert(omx_set_port_buf_cnt(handle, 0, NV12_BUFFER_COUNT));
 
     /* Configure output port */
-    assert(omx_set_out_port_fmt(handle, H264_BITRATE, OMX_VIDEO_CodingAVC));
+    assert(omx_set_out_port_fmt(handle, H264_BITRATE,
+                                OMX_VIDEO_CodingAVC, FRAMERATE));
 
     assert(omx_set_port_buf_cnt(handle, 1, H264_BUFFER_COUNT));
 
