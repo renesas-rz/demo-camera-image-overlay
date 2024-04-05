@@ -292,6 +292,21 @@ Then, run the following commands:
 
 * A1: The _make_ command needs the _wayland-scanner_ tool to generate the _xdg-shell-protocol.c_ file from the _xdg-shell.xml_ file. But the XML file doesn't exist, so the tool crashes and the compilation stops. To fix this, make sure you are using the SDK generated from _core-image-weston_ or _core-image-qt_.
 
+* Q2: How to fix "wayland-scanner: Command not found"?
+
+  ```console
+  user@ubuntu:~/demo-camera-image-overlay$ make
+  ...
+  make: wayland-scanner: Command not found
+  make: *** [Makefile:68: common/src/xdg-shell-protocol.c] Error 127
+  ```
+* A2: The _make_ command needs the _wayland-scanner_ tool. This is installed in the SDK if you modified the local.conf as mentioned in the instructions (added " wayland", removed " x11"). However, you can also just install the tool manually by using the command below.
+
+  ```console
+  $ sudo apt-get install libwayland-dev
+  ```
+
+
 ## Revision history
 
 | Version | Date | Summary |
