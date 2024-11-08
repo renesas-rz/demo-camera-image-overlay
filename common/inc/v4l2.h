@@ -19,6 +19,7 @@
  *
  *   v4l2_get_format
  *   v4l2_get_stream_params
+ *   v4l2_get_framerate
  *   v4l2_set_format
  *   v4l2_set_framerate
  *
@@ -45,6 +46,8 @@
 #include <stdbool.h>
 
 #include <linux/videodev2.h>
+
+#include "util.h"
 
 /******************************************************************************
  *                            STRUCTURE DEFINITION                            *
@@ -107,6 +110,12 @@ bool v4l2_get_format(int dev_fd, struct v4l2_format * p_fmt);
  * Return true if successful. Otherwise, return false */
 bool v4l2_get_stream_params(int dev_fd, struct v4l2_streamparm * p_params);
 
+/* Get framerate for V4L2 device.
+ * If the operation is successful, the returned `framerate_t` will
+ * contain positive numerator (`num`) and denominator (`den`) values
+ * If the operation fails, both `num` and `den` will be set to 0 */
+framerate_t v4l2_get_framerate(int dev_fd);
+
 /* Set format for V4L2 device.
  * Return true if successful. Otherwise, return false */
 bool v4l2_set_format(int dev_fd,
@@ -115,7 +124,7 @@ bool v4l2_set_format(int dev_fd,
 
 /* Set framerate for V4L2 device.
  * Return true if successful. Otherwise, return false */
-bool v4l2_set_framerate(int dev_fd, uint32_t framerate);
+bool v4l2_set_framerate(int dev_fd, framerate_t * p_framerate);
 
 /* Export dmabuf from V4L2 device.
  * Return true if successful. Otherwise, return false */

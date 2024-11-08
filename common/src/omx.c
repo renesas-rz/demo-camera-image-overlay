@@ -202,7 +202,7 @@ bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
 
 bool omx_set_out_port_fmt(OMX_HANDLETYPE hdl, OMX_U32 bitrate,
                           OMX_VIDEO_CODINGTYPE compression_fmt,
-                          OMX_U32 framerate)
+                          framerate_t framerate)
 {
     bool b_set_fmt_ok     = false;
     bool b_set_fps_ok     = false;
@@ -213,7 +213,7 @@ bool omx_set_out_port_fmt(OMX_HANDLETYPE hdl, OMX_U32 bitrate,
     OMXR_MC_VIDEO_PARAM_AVC_VUI_PROPERTY vui;
 
     /* Check parameters */
-    assert((bitrate > 0) && (framerate > 0));
+    assert((bitrate > 0) && IS_FRAMERATE_VALID(framerate));
 
     /* Get output port */
     if (omx_get_port(hdl, 1, &out_port) == true)
@@ -229,10 +229,10 @@ bool omx_set_out_port_fmt(OMX_HANDLETYPE hdl, OMX_U32 bitrate,
         /* Configure and set framerate to VUI property */
         OMX_INIT_STRUCTURE(&vui);
 
-        vui.nPortIndex = 1;
-        vui.u32NumUnitsInTick = 1;
-        vui.u32TimeScale = framerate * 2; /* double target framerate */
-        vui.bFixedFrameRateFlag = OMX_TRUE;
+        vui.nPortIndex             = 1;
+        vui.u32NumUnitsInTick      = framerate.den;
+        vui.u32TimeScale           = framerate.num * 2;
+        vui.bFixedFrameRateFlag    = OMX_TRUE;
         vui.bTimingInfoPresentFlag = OMX_TRUE;
 
         if (OMX_ErrorNone ==

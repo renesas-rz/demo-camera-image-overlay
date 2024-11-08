@@ -308,7 +308,7 @@ bool omx_set_in_port_fmt(OMX_HANDLETYPE handle,
  * Return true if successful. Otherwise, return false */
 bool omx_set_out_port_fmt(OMX_HANDLETYPE handle, OMX_U32 bitrate,
                           OMX_VIDEO_CODINGTYPE compression_fmt,
-                          OMX_U32 framerate);
+                          framerate_t framerate);
 
 /* Set 'buf_cnt' buffers to port 'port_idx'.
  * Return true if successful. Otherwise, return false */

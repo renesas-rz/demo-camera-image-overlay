@@ -66,6 +66,33 @@
 /* Convert struct 'timeval' to seconds */
 #define TIMEVAL_TO_SECS(T) ((1.0 * TIMEVAL_TO_USECS(T)) / USECS_PER_SEC)
 
+/* Calculate the number of bytes of width of YUYV frame */
+#define YUYV_FRAME_WIDTH(WIDTH) ((WIDTH) * 2)
+
+/* Calculate size of YUYV frame */
+#define YUYV_FRAME_SZ(WIDTH, HEIGHT) ((WIDTH) * (HEIGHT) * 2)
+
+/* Calculate size of NV12 frame */
+#define NV12_FRAME_SZ(WIDTH, HEIGHT) ((WIDTH) * (HEIGHT) * 1.5f)
+
+/* Validate framerate */
+#define IS_FRAMERATE_VALID(FPS) (((FPS).den > 0) && ((FPS).num > 0))
+
+/******************************************************************************
+ *                           STRUCTURE DEFINITIONS                            *
+ ******************************************************************************/
+
+/* This structure is for fractional framerate */
+typedef struct
+{
+    /* Numerator */
+    uint32_t num;
+
+    /* Denominator */
+    uint32_t den;
+
+} framerate_t;
+
 /******************************************************************************
  *                            FUNCTION DECLARATION                            *
  ******************************************************************************/

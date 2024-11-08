@@ -14,6 +14,7 @@
 #include "egl.h"
 #include "util.h"
 #include "v4l2.h"
+#include "prog.h"
 
 /******************************************************************************
  *                              MACRO VARIABLES                               *
@@ -23,23 +24,19 @@
 
 #define FONT_FILE "LiberationSans-Regular.ttf"
 
-#define FRAME_WIDTH_IN_PIXELS  640
-
-#define FRAME_HEIGHT_IN_PIXELS 480
-
-#define YUYV_FRAME_WIDTH_IN_BYTES (FRAME_WIDTH_IN_PIXELS * 2)
-
-#define YUYV_FRAME_SIZE_IN_BYTES (FRAME_WIDTH_IN_PIXELS  * \
-                                  FRAME_HEIGHT_IN_PIXELS * 2)
-
-#define FRAMERATE 30 /* FPS */
-
 /* The sample app is tested OK with:
  *   - Logitech C270 HD Webcam.
  *   - Logitech C920 HD Pro Webcam.
  *   - Logitech C930e Business Webcam.
- *   - Logitech BRIO Ultra HD Pro Business Webcam */
-#define USB_CAMERA_FD "/dev/video0"
+ *   - Logitech BRIO Ultra HD Pro Business Webcam.
+ *   - Google Coral MIPI OV5645 Camera */
+#define DEFAULT_FRAME_WIDTH  640 /* pixels */
+
+#define DEFAULT_FRAME_HEIGHT 480 /* pixels */
+
+#define DEFAULT_FRAME_RATE 30 /* FPS */
+
+#define DEFAULT_CAMERA_DEVICE "/dev/video0"
 
 /* The number of buffers to be allocated for the camera */
 #define YUYV_BUFFER_COUNT 5
@@ -61,8 +58,19 @@ void sigint_handler(int signum, siginfo_t * p_info, void * p_ptr);
  *                               MAIN FUNCTION                                *
  ******************************************************************************/
 
-int main()
+int main(int argc, char * p_argv[])
 {
+    /* Create the program options structure */
+    prog_opts_t opt;
+
+    /* Set default values to the program options structure */
+    strcpy(opt.cam_dev, DEFAULT_CAMERA_DEVICE);
+
+    opt.width         = DEFAULT_FRAME_WIDTH;
+    opt.height        = DEFAULT_FRAME_HEIGHT;
+    opt.framerate.den = DEFAULT_FRAME_RATE;
+    opt.framerate.num = 1;
+
     /* Interrupt signal */
     struct sigaction sig_act;
 
@@ -123,8 +131,15 @@ int main()
      *                       STEP 2: SET UP V4L2 DEVICE                       *
      **************************************************************************/
 
+    /* Parse options */
+    prog_parse_options(argc, p_argv, &opt);
+
+    /* Validate options */
+    assert((opt.width > 0) && (opt.height > 0));
+    assert(IS_FRAMERATE_VALID(opt.framerate));
+
     /* Open camera */
-    cam_fd = v4l2_open_dev(USB_CAMERA_FD);
+    cam_fd = v4l2_open_dev(opt.cam_dev);
     assert(cam_fd != -1);
 
     /* Verify camera */
@@ -134,19 +149,18 @@ int main()
     v4l2_print_caps(cam_fd);
 
     /* Set format for camera */
-    assert(v4l2_set_format(cam_fd,
-                           FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
+    assert(v4l2_set_format(cam_fd, opt.width, opt.height,
                            V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE));
 
     /* Confirm new format */
     assert(v4l2_get_format(cam_fd, &cam_fmt));
-    assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH_IN_BYTES);
-    assert(cam_fmt.fmt.pix.sizeimage    == YUYV_FRAME_SIZE_IN_BYTES);
-    assert(cam_fmt.fmt.pix.pixelformat  == V4L2_PIX_FMT_YUYV);
-    assert(cam_fmt.fmt.pix.field        == V4L2_FIELD_NONE);
+    assert(cam_fmt.fmt.pix.field == V4L2_FIELD_NONE);
+    assert(cam_fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV);
+    assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH(opt.width));
+    assert(cam_fmt.fmt.pix.sizeimage == YUYV_FRAME_SZ(opt.width, opt.height));
 
-    /* Set framerate for camera */
-    assert(v4l2_set_framerate(cam_fd, FRAMERATE));
+    /* Set camera framerate */
+    v4l2_set_framerate(cam_fd, &opt.framerate);
 
     /* Print format of camera to console */
     v4l2_print_format(cam_fd);
@@ -165,7 +179,8 @@ int main()
 
     for (index = 0; index < YUYV_BUFFER_COUNT; index++)
     {
-        assert(p_yuyv_bufs[index].size == YUYV_FRAME_SIZE_IN_BYTES);
+        assert(p_yuyv_bufs[index].size == YUYV_FRAME_SZ(opt.width,
+                                                        opt.height));
     }
 
     /**************************************************************************
@@ -178,8 +193,7 @@ int main()
 
     /* Create Wayland window */
     p_wl_window = wl_create_window(p_wl_display, WINDOW_TITLE,
-                                   FRAME_WIDTH_IN_PIXELS,
-                                   FRAME_HEIGHT_IN_PIXELS);
+                                   opt.width, opt.height);
     assert(p_wl_window != NULL);
 
     /**************************************************************************
@@ -220,8 +234,7 @@ int main()
     text_prog = gl_create_prog_from_src("text.vs.glsl", "text.fs.glsl");
 
     /* Create resources needed for rendering */
-    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
-                                 FRAME_HEIGHT_IN_PIXELS, FONT_FILE);
+    gl_res = gl_create_resources(opt.width, opt.height, FONT_FILE);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
@@ -244,14 +257,11 @@ int main()
      *  [   28.151050] WARNING: CPU: 1 PID: 273 at mali_kbase_mem_linux.c:1184
      *                 kbase_mem_umm_map_attachment+0x1a8/0x270 [mali_kbase]
      *  ... */
-    assert(util_is_aligned_to_page_size(YUYV_FRAME_SIZE_IN_BYTES));
+    assert(util_is_aligned_to_page_size(YUYV_FRAME_SZ(opt.width, opt.height)));
 
     /* Create YUYV EGLImage objects */
-    p_yuyv_imgs = egl_create_yuyv_images(egl_display,
-                                         FRAME_WIDTH_IN_PIXELS,
-                                         FRAME_HEIGHT_IN_PIXELS,
-                                         p_yuyv_bufs,
-                                         YUYV_BUFFER_COUNT);
+    p_yuyv_imgs = egl_create_yuyv_images(egl_display, opt.width, opt.height,
+                                         p_yuyv_bufs, YUYV_BUFFER_COUNT);
     assert(p_yuyv_imgs != NULL);
 
     /* Create YUYV textures */

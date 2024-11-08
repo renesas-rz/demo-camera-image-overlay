@@ -25,7 +25,6 @@
 #include <sys/ioctl.h>
 
 #include "v4l2.h"
-#include "util.h"
 
 /******************************************************************************
  *                            FUNCTION DEFINITION                             *
@@ -172,20 +171,17 @@ void v4l2_print_format(int dev_fd)
 
 void v4l2_print_framerate(int dev_fd)
 {
-    struct v4l2_streamparm params;
-    float framerate = 0;
+    framerate_t fps;
 
     /* Check parameter */
     assert(dev_fd > 0);
 
-    /* Get current streaming parameters of the device */
-    if (v4l2_get_stream_params(dev_fd, &params) == true)
-    {
-        /* Calculate framerate */
-        framerate = (1.0f * params.parm.capture.timeperframe.denominator) /
-                            params.parm.capture.timeperframe.numerator;
+    /* Get current framerate */
+    fps = v4l2_get_framerate(dev_fd);
 
-        printf("V4L2 framerate: '%.1f'\n", framerate);
+    if (IS_FRAMERATE_VALID(fps))
+    {
+        printf("V4L2 framerate: '%.3f'\n", (1.0f * fps.num) / (fps.den));
     }
 }
 
@@ -264,6 +260,29 @@ bool v4l2_get_stream_params(int dev_fd, struct v4l2_streamparm * p_params)
     return true;
 }
 
+framerate_t v4l2_get_framerate(int dev_fd)
+{
+    struct v4l2_streamparm params;
+
+    framerate_t framerate = 
+    {
+        .num = 0,
+        .den = 0
+    };
+
+    /* Check parameter */
+    assert(dev_fd > 0);
+
+    /* Get current streaming parameters of the device */
+    if (v4l2_get_stream_params(dev_fd, &params) == true)
+    {
+        framerate.num = params.parm.capture.timeperframe.denominator;
+        framerate.den = params.parm.capture.timeperframe.numerator;
+    }
+
+    return framerate;
+}
+
 bool v4l2_set_format(int dev_fd,
                      uint32_t img_width, uint32_t img_height,
                      uint32_t pix_fmt, enum v4l2_field field)
@@ -295,12 +314,12 @@ bool v4l2_set_format(int dev_fd,
     return true;
 }
 
-bool v4l2_set_framerate(int dev_fd, uint32_t framerate)
+bool v4l2_set_framerate(int dev_fd, framerate_t * p_framerate)
 {
     struct v4l2_streamparm params;
 
     /* Check parameters */
-    assert((dev_fd > 0) && (framerate > 0));
+    assert((dev_fd > 0) && (p_framerate != NULL));
 
     /* Get current framerate of the device */
     if (v4l2_get_stream_params(dev_fd, &params) == false)
@@ -318,14 +337,19 @@ bool v4l2_set_framerate(int dev_fd, uint32_t framerate)
         return false;
     }
 
-    params.parm.capture.timeperframe.numerator   = 1;
-    params.parm.capture.timeperframe.denominator = framerate;
+    params.parm.capture.timeperframe.numerator   = p_framerate->den;
+    params.parm.capture.timeperframe.denominator = p_framerate->num;
 
     if (ioctl(dev_fd, VIDIOC_S_PARM, &params) == -1)
     {
         util_print_errno();
         return false;
     }
+
+    /* Note: Some framerates might not be fully supported by device. 
+     * After setting the desired framerate, we need to retrieve the actual 
+     * framerate. */
+    *p_framerate = v4l2_get_framerate(dev_fd);
 
     return true;
 }

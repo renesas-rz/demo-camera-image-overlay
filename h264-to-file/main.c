@@ -14,6 +14,7 @@
 #include "omx.h"
 #include "util.h"
 #include "v4l2.h"
+#include "prog.h"
 #include "mmngr.h"
 #include "queue.h"
 
@@ -23,28 +24,21 @@
 
 #define FONT_FILE "LiberationSans-Regular.ttf"
 
-#define FRAME_WIDTH_IN_PIXELS  640
-
-#define FRAME_HEIGHT_IN_PIXELS 480
-
-#define YUYV_FRAME_WIDTH_IN_BYTES (FRAME_WIDTH_IN_PIXELS * 2)
-
-#define YUYV_FRAME_SIZE_IN_BYTES (FRAME_WIDTH_IN_PIXELS  * \
-                                  FRAME_HEIGHT_IN_PIXELS * 2)
-
-#define NV12_FRAME_SIZE_IN_BYTES (FRAME_WIDTH_IN_PIXELS  * \
-                                  FRAME_HEIGHT_IN_PIXELS * 1.5f)
-
-#define FRAMERATE 30 /* FPS */
-
 /********************************** FOR V4L2 **********************************/
 
 /* The sample app is tested OK with:
  *   - Logitech C270 HD Webcam.
  *   - Logitech C920 HD Pro Webcam.
  *   - Logitech C930e Business Webcam.
- *   - Logitech BRIO Ultra HD Pro Business Webcam */
-#define USB_CAMERA_FD "/dev/video0"
+ *   - Logitech BRIO Ultra HD Pro Business Webcam.
+ *   - Google Coral MIPI OV5645 Camera */
+#define DEFAULT_FRAME_WIDTH  640 /* pixels */
+
+#define DEFAULT_FRAME_HEIGHT 480 /* pixels */
+
+#define DEFAULT_FRAME_RATE 30 /* FPS */
+
+#define DEFAULT_CAMERA_DEVICE "/dev/video0"
 
 /* The number of buffers to be allocated for the camera */
 #define YUYV_BUFFER_COUNT 5
@@ -64,7 +58,7 @@
  *                                          and the quality should be better */
 #define H264_BITRATE 5000000 /* 5 Mbit/s */
 
-#define H264_FILE_NAME "out-h264-640x480.264"
+#define H264_FILE_NAME "output.264"
 
 /******************************************************************************
  *                              GLOBAL VARIABLES                              *
@@ -98,8 +92,14 @@ typedef struct
 /* This structure is for input thread */
 typedef struct
 {
-    /* USB camera */
+    /* Camera file descriptor */
     int cam_fd;
+
+    /* Frame width of camera */
+    size_t cam_width;
+
+    /* Frame height of camera */
+    size_t cam_height;
 
     /* YUYV buffers */
     v4l2_dmabuf_exp_t * p_yuyv_bufs;
@@ -216,8 +216,19 @@ void * thread_output(void * p_param);
  *                               MAIN FUNCTION                                *
  ******************************************************************************/
 
-int main()
+int main(int argc, char * p_argv[])
 {
+    /* Create the program options structure */
+    prog_opts_t opt;
+
+    /* Set default values to the program options structure */
+    strcpy(opt.cam_dev, DEFAULT_CAMERA_DEVICE);
+
+    opt.width         = DEFAULT_FRAME_WIDTH;
+    opt.height        = DEFAULT_FRAME_HEIGHT;
+    opt.framerate.num = DEFAULT_FRAME_RATE;
+    opt.framerate.den = 1;
+
     /* Interrupt signal */
     struct sigaction sig_act;
 
@@ -289,8 +300,15 @@ int main()
      *                       STEP 2: SET UP V4L2 DEVICE                       *
      **************************************************************************/
 
+    /* Parse options */
+    prog_parse_options(argc, p_argv, &opt);
+
+    /* Validate options */
+    assert((opt.width > 0) && (opt.height > 0));
+    assert(IS_FRAMERATE_VALID(opt.framerate));
+
     /* Open camera */
-    cam_fd = v4l2_open_dev(USB_CAMERA_FD);
+    cam_fd = v4l2_open_dev(opt.cam_dev);
     assert(cam_fd != -1);
 
     /* Verify camera */
@@ -300,19 +318,23 @@ int main()
     v4l2_print_caps(cam_fd);
 
     /* Set format for camera */
-    assert(v4l2_set_format(cam_fd,
-                           FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
+    assert(v4l2_set_format(cam_fd, opt.width, opt.height,
                            V4L2_PIX_FMT_YUYV, V4L2_FIELD_NONE));
 
     /* Confirm new format */
     assert(v4l2_get_format(cam_fd, &cam_fmt));
-    assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH_IN_BYTES);
-    assert(cam_fmt.fmt.pix.sizeimage    == YUYV_FRAME_SIZE_IN_BYTES);
-    assert(cam_fmt.fmt.pix.pixelformat  == V4L2_PIX_FMT_YUYV);
-    assert(cam_fmt.fmt.pix.field        == V4L2_FIELD_NONE);
+    assert(cam_fmt.fmt.pix.field == V4L2_FIELD_NONE);
+    assert(cam_fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV);
+    assert(cam_fmt.fmt.pix.bytesperline == YUYV_FRAME_WIDTH(opt.width));
+    assert(cam_fmt.fmt.pix.sizeimage == YUYV_FRAME_SZ(opt.width, opt.height));
 
-    /* Set framerate for camera */
-    assert(v4l2_set_framerate(cam_fd, FRAMERATE));
+    /* Set camera framerate.
+     * If unsuccessful, reset to the default framerate */
+    if (v4l2_set_framerate(cam_fd, &opt.framerate) == false)
+    {
+        opt.framerate.num = DEFAULT_FRAME_RATE;
+        opt.framerate.den = 1;
+    }
 
     /* Print format of camera to console */
     v4l2_print_format(cam_fd);
@@ -331,7 +353,8 @@ int main()
 
     for (index = 0; index < YUYV_BUFFER_COUNT; index++)
     {
-        assert(p_yuyv_bufs[index].size == YUYV_FRAME_SIZE_IN_BYTES);
+        assert(p_yuyv_bufs[index].size == YUYV_FRAME_SZ(opt.width,
+                                                        opt.height));
     }
 
     /**************************************************************************
@@ -339,7 +362,8 @@ int main()
      **************************************************************************/
 
     p_nv12_bufs = mmngr_alloc_nv12_dmabufs(NV12_BUFFER_COUNT,
-                                           NV12_FRAME_SIZE_IN_BYTES);
+                                           NV12_FRAME_SZ(opt.width,
+                                                         opt.height));
     assert(p_nv12_bufs != NULL);
 
     /**************************************************************************
@@ -359,15 +383,14 @@ int main()
     omx_print_mc_role(handle);
 
     /* Configure input port */
-    assert(omx_set_in_port_fmt(handle,
-                               FRAME_WIDTH_IN_PIXELS, FRAME_HEIGHT_IN_PIXELS,
+    assert(omx_set_in_port_fmt(handle, opt.width, opt.height,
                                OMX_COLOR_FormatYUV420SemiPlanar));
 
     assert(omx_set_port_buf_cnt(handle, 0, NV12_BUFFER_COUNT));
 
     /* Configure output port */
     assert(omx_set_out_port_fmt(handle, H264_BITRATE,
-                                OMX_VIDEO_CodingAVC, FRAMERATE));
+                                OMX_VIDEO_CodingAVC, opt.framerate));
 
     assert(omx_set_port_buf_cnt(handle, 1, H264_BUFFER_COUNT));
 
@@ -453,6 +476,8 @@ int main()
      **************************************************************************/
 
     in_data.cam_fd           = cam_fd;
+    in_data.cam_width        = opt.width;
+    in_data.cam_height       = opt.height;
     in_data.p_yuyv_bufs      = p_yuyv_bufs;
     in_data.p_nv12_bufs      = p_nv12_bufs;
     in_data.handle           = handle;
@@ -764,8 +789,8 @@ void * thread_input(void * p_param)
                                                "rgb-to-nv12.fs.glsl");
 
     /* Create resources needed for rendering */
-    gl_res = gl_create_resources(FRAME_WIDTH_IN_PIXELS,
-                                 FRAME_HEIGHT_IN_PIXELS, FONT_FILE);
+    gl_res = gl_create_resources(p_data->cam_width,
+                                 p_data->cam_height, FONT_FILE);
 
     /* Initialize OpenGL ES extension functions */
     assert(gl_init_ext_funcs());
@@ -788,12 +813,13 @@ void * thread_input(void * p_param)
      *  [   28.151050] WARNING: CPU: 1 PID: 273 at mali_kbase_mem_linux.c:1184
      *                 kbase_mem_umm_map_attachment+0x1a8/0x270 [mali_kbase]
      *  ... */
-    assert(util_is_aligned_to_page_size(YUYV_FRAME_SIZE_IN_BYTES));
+    assert(util_is_aligned_to_page_size(YUYV_FRAME_SZ(p_data->cam_width,
+                                                      p_data->cam_height)));
 
     /* Create YUYV EGLImage objects */
     p_yuyv_imgs = egl_create_yuyv_images(display,
-                                         FRAME_WIDTH_IN_PIXELS,
-                                         FRAME_HEIGHT_IN_PIXELS,
+                                         p_data->cam_width,
+                                         p_data->cam_height,
                                          p_data->p_yuyv_bufs,
                                          YUYV_BUFFER_COUNT);
     assert(p_yuyv_imgs != NULL);
@@ -807,8 +833,7 @@ void * thread_input(void * p_param)
      **************************************************************************/
 
     /* Create RGB textures */
-    p_rgb_texs = gl_create_rgb_textures(FRAME_WIDTH_IN_PIXELS,
-                                        FRAME_HEIGHT_IN_PIXELS,
+    p_rgb_texs = gl_create_rgb_textures(p_data->cam_width, p_data->cam_height,
                                         NULL, YUYV_BUFFER_COUNT);
     assert(p_rgb_texs != NULL);
 
@@ -823,8 +848,8 @@ void * thread_input(void * p_param)
 
     /* Create NV12 EGLImage objects */
     p_nv12_imgs = egl_create_nv12_images(display,
-                                         FRAME_WIDTH_IN_PIXELS,
-                                         FRAME_HEIGHT_IN_PIXELS,
+                                         p_data->cam_width,
+                                         p_data->cam_height,
                                          p_data->p_nv12_bufs,
                                          NV12_BUFFER_COUNT);
     assert(p_nv12_imgs != NULL);
@@ -902,7 +927,8 @@ void * thread_input(void * p_param)
         assert(v4l2_enqueue_buf(p_data->cam_fd, cam_buf.index));
 
         /* If 'p_buf' contains data, 'nFilledLen' must not be zero */
-        p_buf->nFilledLen = NV12_FRAME_SIZE_IN_BYTES;
+        p_buf->nFilledLen = NV12_FRAME_SZ(p_data->cam_width,
+                                          p_data->cam_height);
 
         /* Section 6.14.1 in document 'R01USxxxxEJxxxx_vecmn_v1.0.pdf' */
         p_buf->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
