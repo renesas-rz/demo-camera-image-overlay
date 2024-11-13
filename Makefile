@@ -43,7 +43,7 @@ TTF_FILE = LiberationSans-Regular.ttf
 # Define sample apps
 APP_DIRS = ./h264-to-file          \
            ./raw-video-to-lcd      \
-	   ./video-to-lcd-and-file
+           ./video-to-lcd-and-file
 
 
 APPS = $(APP_DIRS:%=%/main)
